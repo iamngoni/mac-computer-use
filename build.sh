@@ -13,7 +13,8 @@ mkdir -p "$APP/Contents/MacOS"
 echo "Compiling…"
 swiftc -O main.swift -o "$APP/Contents/MacOS/$EXEC" \
   -framework Foundation -framework AppKit -framework ApplicationServices \
-  -framework CoreGraphics -framework QuartzCore
+  -framework CoreGraphics -framework QuartzCore -framework ImageIO \
+  -framework ScreenCaptureKit
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,8 +24,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>mac-computer-use</string>
   <key>CFBundleDisplayName</key><string>Mac Computer Use</string>
   <key>CFBundleIdentifier</key><string>$ID</string>
-  <key>CFBundleVersion</key><string>0.4.0</string>
-  <key>CFBundleShortVersionString</key><string>0.4.0</string>
+  <key>CFBundleVersion</key><string>0.5.0</string>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
   <key>CFBundleExecutable</key><string>$EXEC</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
