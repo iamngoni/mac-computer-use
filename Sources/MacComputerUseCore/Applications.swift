@@ -132,9 +132,26 @@ func launchOrActivate(_ spec: String) -> (ok: Bool, msg: String) {
 }
 
 func toolOpenApp(_ args: [String: Any]) -> [String: Any] {
-    guard let spec = args["app"] as? String, !spec.isEmpty else { return toolText("open_app needs 'app'.", isError: true) }
-    let r = launchOrActivate(spec)
-    return toolText(r.msg, isError: !r.ok)
+    guard let supplied = args["app"] as? String else {
+        return toolText("open_app needs 'app'.", isError: true)
+    }
+    let spec = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !spec.isEmpty else { return toolText("open_app needs 'app'.", isError: true) }
+    let existing = resolveApp(spec)
+    return controlled(
+        "Opening \(existing?.localizedName ?? spec)",
+        appPID: existing?.processIdentifier,
+        appName: existing?.localizedName ?? spec
+    ) {
+        let result = launchOrActivate(spec)
+        if result.ok, let resolved = resolveApp(spec) {
+            OverlayController.shared.updateControlledApplication(
+                pid: resolved.processIdentifier,
+                name: resolved.localizedName ?? spec
+            )
+        }
+        return toolText(result.msg, isError: !result.ok)
+    }
 }
 
 // Run AppleScript and return (output, error). Used for reliable browser navigation and
@@ -172,7 +189,13 @@ func toolNavigate(_ args: [String: Any]) -> [String: Any] {
     let wantNewTab = (args["new_tab"] as? Bool) ?? false
     // Ensure the app is running first (launch if needed, no foregrounding required for scripting).
     if resolveApp(appSpec) == nil { _ = launchOrActivate(appSpec); usleep(700_000) }
-    return controlled("Navigating \(appName)") {
+    let targetApp = resolveApp(appSpec)
+    let controlledAppName = targetApp?.localizedName ?? appName
+    return controlled(
+        "Navigating \(controlledAppName)",
+        appPID: targetApp?.processIdentifier,
+        appName: controlledAppName
+    ) {
         let script = wantNewTab
             ? "try\n\(newTab)\non error\n\(openWin)\nend try"
             : "try\ntell application \"\(appName)\" to set \(tabExpr) to \"\(esc)\"\non error\n\(openWin)\ntell application \"\(appName)\" to set \(tabExpr) to \"\(esc)\"\nend try"

@@ -8,14 +8,11 @@ import ScreenCaptureKit
 import Darwin
 
 // MARK: - Input synthesis (background-capable)
-// When a pid is supplied, events are delivered to that process via postToPid — so we
-// can drive an app WITHOUT bringing it to the foreground (like Codex). When pid is nil,
-// events go to the global HID tap (whatever is frontmost).
-func postEvent(_ e: CGEvent, pid: pid_t?) {
-    if let pid = pid { e.postToPid(pid) } else { e.post(tap: .cghidEventTap) }
-}
+// Every synthesized event requires an already-resolved process. App-scoped tools never
+// post to the global HID tap, so they cannot move or click the user's hardware pointer.
+func postEvent(_ event: CGEvent, pid: pid_t) { event.postToPid(pid) }
 
-func mouseClick(_ pt: CGPoint, button: CGMouseButton, count: Int, pid: pid_t?) {
+func mouseClick(_ pt: CGPoint, button: CGMouseButton, count: Int, pid: pid_t) {
     let (down, up): (CGEventType, CGEventType) = button == .right ? (.rightMouseDown, .rightMouseUp)
         : (button == .center ? (.otherMouseDown, .otherMouseUp) : (.leftMouseDown, .leftMouseUp))
     for i in 1...max(1, count) {
@@ -26,19 +23,7 @@ func mouseClick(_ pt: CGPoint, button: CGMouseButton, count: Int, pid: pid_t?) {
         usleep(40_000)
     }
 }
-func mouseMoveTo(_ pt: CGPoint, pid: pid_t?) { if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) { postEvent(e, pid: pid) } }
-func mouseDrag(from: CGPoint, to: CGPoint, pid: pid_t?) {
-    if let e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left) { postEvent(e, pid: pid) }; usleep(60_000)
-    let steps = 22
-    for i in 1...steps {
-        if cancelFlag.value { if let e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: from, mouseButton: .left) { postEvent(e, pid: pid) }; return }
-        let t = Double(i)/Double(steps)
-        let p = CGPoint(x: from.x + (to.x-from.x)*t, y: from.y + (to.y-from.y)*t)
-        if let e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left) { postEvent(e, pid: pid) }; usleep(9_000)
-    }
-    if let e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left) { postEvent(e, pid: pid) }
-}
-func scrollWheel(dx: Int32, dy: Int32, pid: pid_t?) { if let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) { postEvent(e, pid: pid) } }
+func mouseMoveTo(_ pt: CGPoint, pid: pid_t) { if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) { postEvent(e, pid: pid) } }
 
 // char -> (keycode, needsShift) for US layout. Real keystrokes are accepted by fields
 // (e.g. browser omniboxes) that ignore unicode-string injection.
@@ -60,7 +45,7 @@ let charKeyMap: [Character: (CGKeyCode, Bool)] = {
     return m
 }()
 
-func typeText(_ s: String, pid: pid_t?) {
+func typeText(_ s: String, pid: pid_t) {
     for ch in s {
         if cancelFlag.value { return }
         if let (code, shift) = charKeyMap[ch] {
@@ -84,7 +69,7 @@ let keyMap: [String: CGKeyCode] = [
     "1":18,"2":19,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"9":25,"0":29,
     "minus":27,"equal":24,"comma":43,"period":47,"slash":44,"semicolon":41,"grave":50
 ]
-func pressKeyCombo(_ spec: String, pid: pid_t?) -> Bool {
+func pressKeyCombo(_ spec: String, pid: pid_t) -> Bool {
     let parts = spec.lowercased().split(separator: "+").map(String.init)
     guard let keyName = parts.last, let code = keyMap[keyName] else { return false }
     var flags = CGEventFlags()

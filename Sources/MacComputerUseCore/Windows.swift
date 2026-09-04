@@ -40,3 +40,72 @@ func preferredWindow(forPid pid: pid_t, titleHint: String?) -> WindowCandidate? 
     if frontmost.id != hinted.id, frontmost.bounds.intersects(hinted.bounds) { return frontmost }
     return hinted
 }
+
+func exactAccessibilityWindowIdentityAvailable() -> Bool {
+    AccessibilityWindowIdentity.shared.available
+}
+
+private final class AccessibilityWindowIdentity: @unchecked Sendable {
+    static let shared = AccessibilityWindowIdentity()
+    private typealias Resolver = @convention(c) (
+        AXUIElement,
+        UnsafeMutablePointer<CGWindowID>
+    ) -> AXError
+
+    private let resolver: Resolver?
+    var available: Bool { resolver != nil }
+
+    private init() {
+        let candidates = [
+            "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
+        ]
+        var loaded: Resolver?
+        for path in candidates {
+            guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL),
+                  let symbol = dlsym(handle, "_AXUIElementGetWindow") else {
+                continue
+            }
+            loaded = unsafeBitCast(symbol, to: Resolver.self)
+            break
+        }
+        resolver = loaded
+    }
+
+    func windowID(for element: AXUIElement) -> CGWindowID? {
+        guard let resolver else { return nil }
+        var identifier: CGWindowID = 0
+        guard resolver(element, &identifier) == .success, identifier > 0 else { return nil }
+        return identifier
+    }
+}
+
+func accessibilityWindow(matching candidate: WindowCandidate, in app: AXUIElement) -> AXUIElement? {
+    let windows = axArr(app, "AXWindows")
+    guard !windows.isEmpty else { return nil }
+
+    let identity = AccessibilityWindowIdentity.shared
+    if identity.available {
+        return windows.first { identity.windowID(for: $0) == candidate.id }
+    }
+
+    // Compatibility fallback for a future macOS release that removes the private symbol.
+    // It deliberately rejects ambiguity rather than mapping an exact WindowServer ID to a
+    // merely nearby AX window.
+    func frameDistance(_ window: AXUIElement) -> CGFloat {
+        guard let frame = axFrame(window) else { return .greatestFiniteMagnitude }
+        return abs(frame.minX - candidate.bounds.minX)
+            + abs(frame.minY - candidate.bounds.minY)
+            + abs(frame.width - candidate.bounds.width)
+            + abs(frame.height - candidate.bounds.height)
+    }
+
+    let exactFrameMatches = windows.filter { frameDistance($0) <= 2 }
+    if exactFrameMatches.count == 1 { return exactFrameMatches[0] }
+
+    if let title = candidate.title, !title.isEmpty {
+        let titleMatches = windows.filter { axStr($0, "AXTitle") == title }
+        if titleMatches.count == 1 { return titleMatches[0] }
+    }
+    return windows.count == 1 ? windows[0] : nil
+}

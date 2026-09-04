@@ -6,16 +6,23 @@ cd "$(dirname "$0")"
 APP="MacComputerUse.app"
 ID="com.modestnerd.mac-computer-use"
 EXEC="mac-computer-use"
-VERSION="0.5.0"
+VERSION="0.6.0"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/VirtualCursor"
 
 echo "Compiling Swift package…"
-swift build -c release --product "$EXEC"
+swift build -c release --product "$EXEC" -Xswiftc -warnings-as-errors
 BIN_DIR="$(swift build -c release --show-bin-path)"
 cp "$BIN_DIR/$EXEC" "$APP/Contents/MacOS/$EXEC"
+
+echo "Packaging virtual cursor assets…"
+for asset in \
+  cursor-pointer.png cursor-pointer@2x.png cursor-pointer@3x.png \
+  cursor-pulse.png cursor-pulse@2x.png cursor-pulse@3x.png; do
+  cp "Assets/VirtualCursor/$asset" "$APP/Contents/Resources/VirtualCursor/$asset"
+done
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

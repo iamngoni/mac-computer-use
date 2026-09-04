@@ -12,7 +12,6 @@ concurrency:
 
 jobs:
   gui-integration:
-    if: vars.MACCU_TCC_CI_ENABLED == 'true'
     runs-on: [self-hosted, macOS, ARM64, maccu-tcc]
     timeout-minutes: 20
     env:

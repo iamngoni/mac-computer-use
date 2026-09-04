@@ -210,3 +210,157 @@ func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> St
     }
     return nil
 }
+
+func skyScroll(screenPoint: CGPoint, ctx: SnapshotContext, dx: Int32, dy: Int32) -> String? {
+    let spi = SkyLight.shared
+    guard spi.available else { return "background scroll unavailable: \(spi.unavailableReason)" }
+    guard skyWindowIsCurrent(windowId: ctx.windowId, pid: ctx.pid) else {
+        return "Background scroll target is stale, off-screen, or no longer owned by \(ctx.appLabel). Run get_app_state again."
+    }
+    let bounds = ctx.windowBounds
+    let windowPoint = CGPoint(x: screenPoint.x - bounds.minX, y: screenPoint.y - bounds.minY)
+    guard windowPoint.x >= 0, windowPoint.y >= 0,
+          windowPoint.x <= bounds.width, windowPoint.y <= bounds.height else {
+        return "Background scroll target is outside the snapshot window bounds."
+    }
+    guard let source = CGEventSource(stateID: .hidSystemState),
+          let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: dy,
+            wheel2: dx,
+            wheel3: 0
+          ) else {
+        return "Background scroll could not create an event."
+    }
+
+    skyClickLock.lock()
+    defer { skyClickLock.unlock() }
+
+    var focusPSN: [UInt8]?
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier != ctx.pid {
+        guard let psn = spi.psn(forPid: ctx.pid) else {
+            return "Background scroll could not resolve pid \(ctx.pid) to a PSN."
+        }
+        guard spi.postActivation(psn: psn, windowId: ctx.windowId, focused: true) else {
+            return "Background scroll synthetic target-focus event failed."
+        }
+        focusPSN = psn
+        Thread.sleep(forTimeInterval: 0.040)
+    }
+
+    event.location = screenPoint
+    spi.setField(event, SkyField.targetPID, Int64(ctx.pid))
+    spi.setField(event, SkyField.windowNumber, Int64(ctx.windowId))
+    spi.setField(event, SkyField.windowUnderPointer, Int64(ctx.windowId))
+    spi.setField(event, SkyField.handlingWindowUnderPointer, Int64(ctx.windowId))
+    spi.setWindowLocation(event, windowPoint)
+    spi.postToPid(event, pid: ctx.pid)
+    event.postToPid(ctx.pid)
+    Thread.sleep(forTimeInterval: 0.060)
+
+    if let psn = focusPSN {
+        _ = spi.postActivation(psn: psn, windowId: ctx.windowId, focused: false)
+        Thread.sleep(forTimeInterval: 0.040)
+    }
+    return nil
+}
+
+func skyDrag(
+    from start: CGPoint,
+    to end: CGPoint,
+    ctx: SnapshotContext,
+    onMove: (CGPoint) -> Void
+) -> String? {
+    let spi = SkyLight.shared
+    guard spi.available else { return "background drag unavailable: \(spi.unavailableReason)" }
+    guard skyWindowIsCurrent(windowId: ctx.windowId, pid: ctx.pid) else {
+        return "Background drag target is stale, off-screen, or no longer owned by \(ctx.appLabel). Run get_app_state again."
+    }
+    let bounds = ctx.windowBounds
+    func contains(_ point: CGPoint) -> Bool {
+        point.x >= bounds.minX && point.y >= bounds.minY
+            && point.x <= bounds.maxX && point.y <= bounds.maxY
+    }
+    guard contains(start), contains(end) else {
+        return "Background drag endpoints must be inside the snapshot window bounds."
+    }
+    guard let source = CGEventSource(stateID: .hidSystemState) else {
+        return "Background drag could not create an event source."
+    }
+
+    skyClickLock.lock()
+    defer { skyClickLock.unlock() }
+
+    var focusPSN: [UInt8]?
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier != ctx.pid {
+        guard let psn = spi.psn(forPid: ctx.pid) else {
+            return "Background drag could not resolve pid \(ctx.pid) to a PSN."
+        }
+        guard spi.postActivation(psn: psn, windowId: ctx.windowId, focused: true) else {
+            return "Background drag synthetic target-focus event failed."
+        }
+        focusPSN = psn
+        Thread.sleep(forTimeInterval: 0.040)
+    }
+    defer {
+        if let psn = focusPSN {
+            _ = spi.postActivation(psn: psn, windowId: ctx.windowId, focused: false)
+            Thread.sleep(forTimeInterval: 0.040)
+        }
+    }
+
+    let groupID = Int64(DispatchTime.now().uptimeNanoseconds % 1_000_000_000)
+    func post(_ type: CGEventType, at point: CGPoint) -> Bool {
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) else { return false }
+        let local = CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY)
+        spi.setField(event, SkyField.gesturePhase, 3)
+        spi.setField(event, SkyField.clickState, 1)
+        spi.setField(event, SkyField.buttonNumber, 0)
+        spi.setField(event, SkyField.subtype, 3)
+        spi.setField(event, SkyField.targetPID, Int64(ctx.pid))
+        spi.setField(event, SkyField.windowNumber, Int64(ctx.windowId))
+        spi.setField(event, SkyField.clickGroupID, groupID)
+        spi.setField(event, SkyField.windowUnderPointer, Int64(ctx.windowId))
+        spi.setField(event, SkyField.handlingWindowUnderPointer, Int64(ctx.windowId))
+        spi.setWindowLocation(event, local)
+        spi.postToPid(event, pid: ctx.pid)
+        event.postToPid(ctx.pid)
+        onMove(point)
+        return true
+    }
+
+    guard post(.leftMouseDown, at: start) else {
+        return "Background drag could not create mouse-down."
+    }
+    Thread.sleep(forTimeInterval: 0.060)
+    var current = start
+    let steps = 22
+    for index in 1...steps {
+        if cancelFlag.value {
+            _ = post(.leftMouseUp, at: current)
+            return "Drag cancelled."
+        }
+        let progress = Double(index) / Double(steps)
+        current = CGPoint(
+            x: start.x + (end.x - start.x) * progress,
+            y: start.y + (end.y - start.y) * progress
+        )
+        guard post(.leftMouseDragged, at: current) else {
+            _ = post(.leftMouseUp, at: current)
+            return "Background drag could not create a dragged event."
+        }
+        Thread.sleep(forTimeInterval: 0.009)
+    }
+    guard post(.leftMouseUp, at: end) else {
+        return "Background drag could not create mouse-up."
+    }
+    Thread.sleep(forTimeInterval: 0.060)
+    return nil
+}
