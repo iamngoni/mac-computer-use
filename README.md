@@ -76,7 +76,8 @@ mac-computer-use overlay (agent)       ── real NSApplication run loop, draws
 ```
 
 - The MCP process never foregrounds apps unless you call `open_app`.
-- The overlay agent launches on the first control action. Its cursor and menu-bar status remain visible for that MCP session, and it exits when the owning MCP process exits.
+- The overlay agent launches on the first control action. Its virtual cursor remains visible for that MCP session and eases between automation coordinates without moving the hardware pointer.
+- Concurrent overlay agents coordinate one shared menu-bar item. Its count and dropdown aggregate the apps controlled by every live session, and another agent takes over the item if its owner exits.
 - Each MCP process owns an isolated IPC directory, so concurrent clients cannot overwrite or delete each other's overlay state.
 
 ## Build
