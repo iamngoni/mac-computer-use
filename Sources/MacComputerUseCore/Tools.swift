@@ -269,13 +269,19 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     if method == "sky_click" {
         guard button == .left else { return toolText("sky_click supports the left button only.", isError: true) }
         return controlled("Clicking (SkyLight)", appPID: pid, targetQuartz: tgt) {
-            OverlayController.shared.flashClickQuartz(p)
-            if let err = skyClick(screenPoint: p, ctx: ctx, clickCount: count) { return toolText(err, isError: true) }
+            OverlayController.shared.moveCursorQuartz(p)
+            if let err = skyClick(
+                screenPoint: p,
+                ctx: ctx,
+                clickCount: count,
+                onClick: { OverlayController.shared.flashClickQuartz(p) }
+            ) { return toolText(err, isError: true) }
             return toolText("Clicked x\(count) at \(describePoint(p, context: ctx)) via sky_click (background).")
         }
     }
 
     return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
+        OverlayController.shared.moveCursorQuartz(p)
         mouseMoveTo(p, pid: pid); usleep(120_000)
         if cancelFlag.value { return toolText("Cancelled (Esc).") }
         guard mouseClick(

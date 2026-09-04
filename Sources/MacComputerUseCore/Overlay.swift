@@ -40,17 +40,33 @@ func menuBarPresentation(
     currentApp: String?,
     controlledApps: [String]
 ) -> MenuBarPresentation {
-    let apps = Array(
-        Set(controlledApps.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-    ).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     let current = currentApp?.trimmingCharacters(in: .whitespacesAndNewlines)
     let visibleCurrent = current.flatMap { $0.isEmpty ? nil : $0 }
+    var normalizedApps = controlledApps.compactMap { app -> String? in
+        let normalized = app.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+    if let visibleCurrent { normalizedApps.append(visibleCurrent) }
+    let apps = Array(Set(normalizedApps)).sorted {
+        $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+    }
+    let accessibilityLabel: String
+    let statusTitle: String
+    switch apps.count {
+    case 0:
+        accessibilityLabel = "Mac Computer Use active"
+        statusTitle = "Active"
+    case 1:
+        accessibilityLabel = "Mac Computer Use active: \(apps[0])"
+        statusTitle = "Active · \(apps[0])"
+    default:
+        accessibilityLabel = "Mac Computer Use active: \(apps.count) apps"
+        statusTitle = "Active · \(apps.count) apps"
+    }
     return MenuBarPresentation(
-        buttonTitle: "",
-        accessibilityLabel: visibleCurrent.map {
-            "Mac Computer Use active: \($0)"
-        } ?? "Mac Computer Use active",
-        statusTitle: visibleCurrent.map { "Active · \($0)" } ?? "Active",
+        buttonTitle: apps.isEmpty ? "" : "\(apps.count)",
+        accessibilityLabel: accessibilityLabel,
+        statusTitle: statusTitle,
         controlledAppTitles: apps
     )
 }
@@ -124,10 +140,9 @@ func cursorPulseDrawRect(in bounds: CGRect, scale: CGFloat) -> CGRect {
 }
 
 func makeAutomationStatusImage(
-    cursorImage: NSImage? = nil,
-    appIcon: NSImage?
+    cursorImage: NSImage? = nil
 ) -> NSImage {
-    let size = NSSize(width: 52, height: 18)
+    let size = NSSize(width: 30, height: 18)
     let image = NSImage(size: size, flipped: false) { _ in
         let cursor = cursorImage ?? NSImage(
             systemSymbolName: "cursorarrow",
@@ -144,17 +159,6 @@ func makeAutomationStatusImage(
         NSBezierPath(
             ovalIn: NSRect(x: 22, y: 6, width: 6, height: 6)
         ).fill()
-
-        let targetIcon = appIcon ?? NSImage(
-            systemSymbolName: "app",
-            accessibilityDescription: nil
-        )
-        targetIcon?.draw(
-            in: NSRect(x: 34, y: 1, width: 16, height: 16),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1
-        )
         return true
     }
     image.isTemplate = false
@@ -162,23 +166,22 @@ func makeAutomationStatusImage(
 }
 
 final class AutomationStatusBarController {
-    private let ownerPID: pid_t
     private let cursorImage: NSImage
     private let statusItem: NSStatusItem
     private var lastSignature = ""
 
-    init(ownerPID: pid_t, cursorImage: NSImage) {
-        self.ownerPID = ownerPID
+    init(cursorImage: NSImage) {
         self.cursorImage = cursorImage
-        statusItem = NSStatusBar.system.statusItem(withLength: 52)
-        update(currentApp: nil, currentAppPID: nil, controlledApps: [])
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        update(currentApp: nil, controlledApps: [])
     }
+
+    deinit { NSStatusBar.system.removeStatusItem(statusItem) }
 
     var isActive: Bool { statusItem.button != nil }
 
     func update(
         currentApp: String?,
-        currentAppPID: pid_t?,
         controlledApps: [String]
     ) {
         let presentation = menuBarPresentation(
@@ -188,21 +191,14 @@ final class AutomationStatusBarController {
         let signature = ([
             presentation.accessibilityLabel,
             presentation.statusTitle,
-            currentAppPID.map(String.init) ?? "",
         ] + presentation.controlledAppTitles).joined(separator: "\u{1f}")
         guard signature != lastSignature else { return }
         lastSignature = signature
 
-        let appIcon = currentAppPID.flatMap {
-            NSRunningApplication(processIdentifier: $0)?.icon
-        }
         if let button = statusItem.button {
             button.title = presentation.buttonTitle
-            button.image = makeAutomationStatusImage(
-                cursorImage: cursorImage,
-                appIcon: appIcon
-            )
-            button.imagePosition = .imageOnly
+            button.image = makeAutomationStatusImage(cursorImage: cursorImage)
+            button.imagePosition = presentation.buttonTitle.isEmpty ? .imageOnly : .imageLeading
             button.toolTip = presentation.accessibilityLabel
             button.setAccessibilityLabel(presentation.accessibilityLabel)
         }
@@ -218,7 +214,7 @@ final class AutomationStatusBarController {
         menu.addItem(.separator())
 
         let heading = NSMenuItem(
-            title: "Controlled apps this session",
+            title: "Controlled apps",
             action: nil,
             keyEquivalent: ""
         )
@@ -243,15 +239,136 @@ final class AutomationStatusBarController {
                 menu.addItem(item)
             }
         }
-        menu.addItem(.separator())
-        let session = NSMenuItem(
-            title: "Session PID \(ownerPID)",
-            action: nil,
-            keyEquivalent: ""
-        )
-        session.isEnabled = false
-        menu.addItem(session)
         statusItem.menu = menu
+    }
+}
+
+private let overlayIPCDirectoryPrefix = "mac-computer-use-overlay-"
+
+func overlayProcessIsAlive(_ pid: pid_t) -> Bool {
+    guard pid > 0 else { return false }
+    errno = 0
+    return kill(pid, 0) == 0 || errno == EPERM
+}
+
+func activeOverlayControlledApps(
+    in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    processIsAlive: (pid_t) -> Bool = overlayProcessIsAlive
+) -> [String] {
+    guard let directories = try? FileManager.default.contentsOfDirectory(
+        at: temporaryDirectory,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    ) else { return [] }
+
+    var applications = Set<String>()
+    for directory in directories where directory.lastPathComponent.hasPrefix(overlayIPCDirectoryPrefix) {
+        guard (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+              let readyData = try? Data(contentsOf: directory.appendingPathComponent("ready.json")),
+              let stateData = try? Data(contentsOf: directory.appendingPathComponent("state.json")),
+              let ready = try? JSONSerialization.jsonObject(with: readyData) as? [String: Any],
+              let state = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
+              let ownerPID = ready["owner_pid"] as? Int,
+              let agentPID = ready["agent_pid"] as? Int,
+              let channelID = ready["channel_id"] as? String,
+              state["pid"] as? Int == ownerPID,
+              directory.lastPathComponent == "\(overlayIPCDirectoryPrefix)\(ownerPID)-\(channelID)",
+              processIsAlive(pid_t(ownerPID)),
+              processIsAlive(pid_t(agentPID)) else {
+            continue
+        }
+        for app in state["controlled_apps"] as? [String] ?? [] {
+            let normalized = app.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty { applications.insert(normalized) }
+        }
+        if let current = state["current_app"] as? String {
+            let normalized = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty { applications.insert(normalized) }
+        }
+    }
+    return applications.sorted {
+        $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+    }
+}
+
+final class ExclusiveFileLease {
+    private let descriptor: Int32
+
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    static func acquire(at url: URL) -> ExclusiveFileLease? {
+        let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return nil }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        return ExclusiveFileLease(descriptor: descriptor)
+    }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+}
+
+final class AutomationStatusBarCoordinator {
+    private let cursorImage: NSImage
+    private let lockURL: URL
+    private let temporaryDirectory: URL
+    private var lease: ExclusiveFileLease?
+    private var statusBarController: AutomationStatusBarController?
+    private var nextLeaseAttempt: CFTimeInterval = 0
+    private var nextApplicationRefresh: CFTimeInterval = 0
+    private var aggregatedApplications: [String] = []
+
+    init(
+        cursorImage: NSImage,
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    ) {
+        self.cursorImage = cursorImage
+        self.temporaryDirectory = temporaryDirectory
+        lockURL = temporaryDirectory.appendingPathComponent("mac-computer-use-menubar.lock")
+        acquireLeaseIfAvailable(now: CACurrentMediaTime())
+    }
+
+    deinit {
+        statusBarController = nil
+        lease = nil
+    }
+
+    var isActive: Bool { statusBarController?.isActive == true }
+
+    func update(currentApp: String?, controlledApps: [String]) {
+        let now = CACurrentMediaTime()
+        acquireLeaseIfAvailable(now: now)
+        guard let statusBarController else { return }
+
+        if now >= nextApplicationRefresh {
+            aggregatedApplications = Array(Set(
+                activeOverlayControlledApps(in: temporaryDirectory) + controlledApps
+            )).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+            nextApplicationRefresh = now + 0.25
+        }
+        statusBarController.update(
+            currentApp: currentApp,
+            controlledApps: aggregatedApplications
+        )
+    }
+
+    private func acquireLeaseIfAvailable(now: CFTimeInterval) {
+        guard statusBarController == nil, now >= nextLeaseAttempt else { return }
+        nextLeaseAttempt = now + 0.5
+        guard let lease = ExclusiveFileLease.acquire(at: lockURL) else { return }
+        self.lease = lease
+        statusBarController = AutomationStatusBarController(
+            cursorImage: cursorImage
+        )
+        nextApplicationRefresh = 0
     }
 }
 
@@ -265,6 +382,11 @@ struct CursorPulsePresentation {
     let opacity: CGFloat
 }
 
+private func smoothStep(_ progress: CGFloat) -> CGFloat {
+    let t = min(max(progress, 0), 1)
+    return t * t * (3 - 2 * t)
+}
+
 func cursorPulsePresentation(
     now: CFTimeInterval,
     clickStartedAt: CFTimeInterval?,
@@ -272,22 +394,82 @@ func cursorPulsePresentation(
 ) -> CursorPulsePresentation {
     let breathingProgress = 0.5 + 0.5 * sin((now / 1.05) * .pi - (.pi / 2))
     let breathingScale = 0.82 + 0.30 * breathingProgress
+    let breathingOpacity = 0.52 + 0.44 * breathingProgress
     let clickAge = clickStartedAt.map { now - $0 }
     let scale: CGFloat
+    let opacity: CGFloat
     if let clickAge, clickAge >= 0, clickAge < 0.07 {
-        scale = 1.0 - 0.24 * CGFloat(clickAge / 0.07)
+        let progress = smoothStep(CGFloat(clickAge / 0.07))
+        scale = 1.0 - 0.24 * progress
+        opacity = 1
     } else if let clickAge, clickAge < 0.23 {
-        scale = 0.76 + 0.48 * CGFloat((clickAge - 0.07) / 0.16)
+        let progress = smoothStep(CGFloat((clickAge - 0.07) / 0.16))
+        scale = 0.76 + 0.48 * progress
+        opacity = 1
     } else if let clickAge, clickAge < 0.41 {
-        let progress = CGFloat((clickAge - 0.23) / 0.18)
+        let progress = smoothStep(CGFloat((clickAge - 0.23) / 0.18))
         scale = 1.24 + (breathingScale - 1.24) * progress
+        opacity = 1 + (breathingOpacity - 1) * progress
     } else {
         scale = breathingScale
+        opacity = breathingOpacity
     }
     return CursorPulsePresentation(
         scale: scale,
-        opacity: cancelling ? 0.35 : 0.52 + 0.44 * breathingProgress
+        opacity: cancelling ? 0.35 : opacity
     )
+}
+
+struct CursorMotionState {
+    private(set) var position: CGPoint?
+    private(set) var velocity = CGVector.zero
+
+    mutating func advance(
+        toward target: CGPoint,
+        deltaTime: CFTimeInterval,
+        angularFrequency: CGFloat = 40
+    ) -> CGPoint {
+        guard target.x.isFinite, target.y.isFinite else {
+            return position ?? .zero
+        }
+        guard let current = position else {
+            position = target
+            velocity = .zero
+            return target
+        }
+
+        let dt = CGFloat(min(max(deltaTime, 0), 0.1))
+        guard dt > 0, angularFrequency > 0 else { return current }
+        let decay = exp(-angularFrequency * dt)
+
+        func advanceAxis(position: CGFloat, velocity: CGFloat, target: CGFloat) -> (CGFloat, CGFloat) {
+            let displacement = position - target
+            let coefficient = velocity + angularFrequency * displacement
+            let nextDisplacement = (displacement + coefficient * dt) * decay
+            let nextVelocity = (velocity - angularFrequency * coefficient * dt) * decay
+            return (target + nextDisplacement, nextVelocity)
+        }
+
+        let nextX = advanceAxis(position: current.x, velocity: velocity.dx, target: target.x)
+        let nextY = advanceAxis(position: current.y, velocity: velocity.dy, target: target.y)
+        let next = CGPoint(x: nextX.0, y: nextY.0)
+        velocity = CGVector(dx: nextX.1, dy: nextY.1)
+
+        let remaining = hypot(target.x - next.x, target.y - next.y)
+        let speed = hypot(velocity.dx, velocity.dy)
+        if remaining < 0.25, speed < 2 {
+            position = target
+            velocity = .zero
+        } else {
+            position = next
+        }
+        return position ?? target
+    }
+
+    mutating func reset() {
+        position = nil
+        velocity = .zero
+    }
 }
 
 final class AutomationCursorView: NSView {
@@ -837,8 +1019,7 @@ func runOverlayAgent(
         log("automation cursor panel has an invalid content view")
         exit(2)
     }
-    let statusBarController = AutomationStatusBarController(
-        ownerPID: ownerPID,
+    let statusBarCoordinator = AutomationStatusBarCoordinator(
         cursorImage: cursorAssets.pointer
     )
     func toLocalR(_ r: CGRect) -> CGRect { CGRect(x: r.minX - window.frame.minX, y: r.minY - window.frame.minY, width: r.width, height: r.height) }
@@ -863,6 +1044,10 @@ func runOverlayAgent(
     }
 
     var missingReads = 0
+    var cursorMotion = CursorMotionState()
+    var lastCursorFrameTime = CACurrentMediaTime()
+    var lastObservedFlashTimestamp: Double?
+    var pendingClick: (point: CGPoint, observedAt: CFTimeInterval)?
     Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { _ in
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
               let st = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -880,13 +1065,9 @@ func runOverlayAgent(
         let linger = st["lingerUntil"] as? Double ?? 0
         let captureHide = st["captureHide"] as? Bool ?? false
         let currentApp = st["current_app"] as? String
-        let currentAppPID = (st["current_app_pid"] as? NSNumber).map {
-            pid_t($0.int32Value)
-        }
         let controlledApps = st["controlled_apps"] as? [String] ?? []
-        statusBarController.update(
+        statusBarCoordinator.update(
             currentApp: currentApp,
-            currentAppPID: currentAppPID,
             controlledApps: controlledApps
         )
         view.cancelling = st["cancelling"] as? Bool ?? false
@@ -894,6 +1075,18 @@ func runOverlayAgent(
         var cursorPoint: CGPoint?
         if let c = st["cursor"] as? [Double], c.count == 2 {
             cursorPoint = quartzPointToCocoa(CGPoint(x: c[0], y: c[1]))
+        }
+        let frameDelta = now - lastCursorFrameTime
+        lastCursorFrameTime = now
+        let displayedCursorPoint: CGPoint?
+        if let cursorPoint {
+            displayedCursorPoint = cursorMotion.advance(
+                toward: cursorPoint,
+                deltaTime: frameDelta
+            )
+        } else {
+            cursorMotion.reset()
+            displayedCursorPoint = nil
         }
         if let t = st["target"] as? [Double], t.count == 4 {
             view.target = toLocalR(
@@ -905,7 +1098,28 @@ func runOverlayAgent(
             view.target = nil
         }
         let flashes = st["flashes"] as? [[Double]] ?? []
-        cursorView.clickStartedAt = flashes.last(where: { now - $0[2] < 0.5 })?[2]
+        if let latestFlash = flashes.last, latestFlash.count == 3 {
+            let timestamp = latestFlash[2]
+            if timestamp != lastObservedFlashTimestamp {
+                lastObservedFlashTimestamp = timestamp
+                if timestamp <= now, now - timestamp < 0.75 {
+                    pendingClick = (
+                        quartzPointToCocoa(CGPoint(x: latestFlash[0], y: latestFlash[1])),
+                        now
+                    )
+                }
+            }
+        }
+        if let click = pendingClick, let displayedCursorPoint {
+            let distance = hypot(
+                click.point.x - displayedCursorPoint.x,
+                click.point.y - displayedCursorPoint.y
+            )
+            if distance < 12 || now - click.observedAt >= 0.2 {
+                cursorView.clickStartedAt = now
+                pendingClick = nil
+            }
+        }
         let presentation = overlayPresentation(
             controlling: controlling,
             lingerUntil: linger,
@@ -920,12 +1134,12 @@ func runOverlayAgent(
         } else if window.isVisible {
             window.orderOut(nil)
         }
-        if presentation.showCursor, let cursorPoint {
+        if presentation.showCursor, let displayedCursorPoint {
             cursorView.cancelling = view.cancelling
             cursorPanel.setFrameOrigin(
                 CGPoint(
-                    x: cursorPoint.x - cursorPanel.frame.width / 2,
-                    y: cursorPoint.y - cursorPanel.frame.height / 2
+                    x: displayedCursorPoint.x - cursorPanel.frame.width / 2,
+                    y: displayedCursorPoint.y - cursorPanel.frame.height / 2
                 )
             )
             if !cursorPanel.isVisible { cursorPanel.orderFrontRegardless() }
@@ -938,7 +1152,7 @@ func runOverlayAgent(
         "owner_pid": Int(ownerPID),
         "agent_pid": Int(getpid()),
         "channel_id": channelID,
-        "menu_bar_item": statusBarController.isActive,
+        "menu_bar_item": statusBarCoordinator.isActive,
     ]
     do {
         let data = try JSONSerialization.data(withJSONObject: ready)

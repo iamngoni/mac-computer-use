@@ -136,7 +136,12 @@ func skyClickRecipe(clickCount: Int) -> [SkyStep] {
 
 let skyClickLock = NSLock()
 
-func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> String? {
+func skyClick(
+    screenPoint: CGPoint,
+    ctx: SnapshotContext,
+    clickCount: Int,
+    onClick: () -> Void
+) -> String? {
     let spi = SkyLight.shared
     guard spi.available else { return "sky_click unavailable: \(spi.unavailableReason)" }
     guard (1...2).contains(clickCount) else { return "sky_click supports click_count 1 or 2." }
@@ -180,6 +185,7 @@ func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> St
             break
         }
         guard let e = CGEvent(mouseEventSource: source, mouseType: step.type, mouseCursorPosition: pt, mouseButton: .left) else { continue }
+        if step.onTarget, step.type == .leftMouseDown { onClick() }
         spi.setField(e, SkyField.gesturePhase, step.phase)
         spi.setField(e, SkyField.clickState, step.clickState)
         spi.setField(e, SkyField.buttonNumber, 0)
