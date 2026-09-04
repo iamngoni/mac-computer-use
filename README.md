@@ -95,13 +95,19 @@ Requires the Swift toolchain (Xcode or Command Line Tools).
 ./build.sh
 ```
 
-This compiles `main.swift` into `MacComputerUse.app` and ad-hoc code-signs it with a stable identifier (`com.modestnerd.mac-computer-use`) so macOS permission grants survive in-place rebuilds.
+This builds the Swift package's release executable, installs it in `MacComputerUse.app`,
+and ad-hoc code-signs the bundle with the stable identifier
+`com.modestnerd.mac-computer-use` so macOS permission grants survive in-place rebuilds.
+The executable and Info.plist both target macOS 13 or later.
 
 ## Test
 
-After building, run the live app-resolution regression:
+Run the permission-free Swift and MCP contract tests, then the permissioned live
+app-resolution regression:
 
 ```bash
+swift test
+python3 -m unittest tests.test_mcp_contract -v
 python3 tests/test_live_app_resolution.py -v
 ```
 
@@ -109,6 +115,22 @@ The test holds one MCP process open while launching, inspecting, terminating, an
 relaunching a temporary GUI app. It verifies that the server drops the dead PID,
 resolves the replacement PID, and can capture the replacement window without an MCP
 restart.
+
+## GitHub Actions
+
+Both workflows use self-hosted macOS runners only:
+
+- `Compile and package` targets `[self-hosted, macOS, ARM64]` and runs for trusted
+  same-repository pull requests, pushes to `master`, and manual dispatches. Enable it by
+  setting the repository variable `SELF_HOSTED_CI_ENABLED=true` after registering a
+  suitable runner.
+- `GUI integration` is manual and targets
+  `[self-hosted, macOS, ARM64, maccu-tcc]`. Enable it with
+  `MACCU_TCC_CI_ENABLED=true` only on a logged-in runner where the fixed-path app has
+  been granted Accessibility and Screen Recording permissions.
+
+Fork pull-request code is not executed on the self-hosted runner. Neither workflow has
+write permissions or receives repository credentials from checkout.
 
 ## Permissions
 
@@ -145,10 +167,15 @@ open_app(app: "Music"); click(app: "Music", element_index: 7)  # play
 ## Layout
 
 ```
-main.swift                         # the entire server + overlay agent
-build.sh                           # compile + sign into MacComputerUse.app
-tests/test_live_app_resolution.py # launch/restart regression for stale app PIDs
-THIRD_PARTY_NOTICES.md             # attribution for the SkyLight click recipe
+Package.swift                       # Swift package definition
+Sources/MacComputerUse/             # three-line executable entry point
+Sources/MacComputerUseCore/         # MCP, AX, capture, input, overlay, and tool modules
+SwiftTests/MacComputerUseCoreTests/ # permission-free Swift contract tests
+tests/test_mcp_contract.py          # permission-free executable protocol test
+tests/test_live_app_resolution.py   # permissioned app lifecycle regression
+.github/workflows/                  # self-hosted compile and GUI workflows
+build.sh                            # package + sign into MacComputerUse.app
+THIRD_PARTY_NOTICES.md              # attribution for the SkyLight click recipe
 README.md
 ```
 

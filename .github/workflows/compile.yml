@@ -1,0 +1,63 @@
+name: Compile and package
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    if: >-
+      vars.SELF_HOSTED_CI_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Reset build state
+        run: git clean -ffdx
+
+      - name: Record toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          uname -m
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Build signed app bundle
+        run: ./build.sh
+
+      - name: Verify permission-free MCP contract and harness
+        run: |
+          python3 -m unittest tests.test_harness -v
+          python3 -m unittest tests.test_mcp_contract -v
+
+      - name: Verify bundle and deployment target
+        run: |
+          plutil -lint MacComputerUse.app/Contents/Info.plist
+          codesign --verify --deep --strict MacComputerUse.app
+          test "$(defaults read "$PWD/MacComputerUse.app/Contents/Info" LSMinimumSystemVersion)" = "13.0"
+          otool -l MacComputerUse.app/Contents/MacOS/mac-computer-use | \
+            grep -A 4 'LC_BUILD_VERSION' | grep -q 'minos 13.0'
+
+      - name: Verify tracked tree stayed clean
+        run: git diff --exit-code
