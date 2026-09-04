@@ -80,32 +80,15 @@ private final class AccessibilityWindowIdentity: @unchecked Sendable {
     }
 }
 
+func canAuthorizeExactWindow(identityResolverAvailable: Bool) -> Bool {
+    identityResolverAvailable
+}
+
 func accessibilityWindow(matching candidate: WindowCandidate, in app: AXUIElement) -> AXUIElement? {
     let windows = axArr(app, "AXWindows")
     guard !windows.isEmpty else { return nil }
 
     let identity = AccessibilityWindowIdentity.shared
-    if identity.available {
-        return windows.first { identity.windowID(for: $0) == candidate.id }
-    }
-
-    // Compatibility fallback for a future macOS release that removes the private symbol.
-    // It deliberately rejects ambiguity rather than mapping an exact WindowServer ID to a
-    // merely nearby AX window.
-    func frameDistance(_ window: AXUIElement) -> CGFloat {
-        guard let frame = axFrame(window) else { return .greatestFiniteMagnitude }
-        return abs(frame.minX - candidate.bounds.minX)
-            + abs(frame.minY - candidate.bounds.minY)
-            + abs(frame.width - candidate.bounds.width)
-            + abs(frame.height - candidate.bounds.height)
-    }
-
-    let exactFrameMatches = windows.filter { frameDistance($0) <= 2 }
-    if exactFrameMatches.count == 1 { return exactFrameMatches[0] }
-
-    if let title = candidate.title, !title.isEmpty {
-        let titleMatches = windows.filter { axStr($0, "AXTitle") == title }
-        if titleMatches.count == 1 { return titleMatches[0] }
-    }
-    return windows.count == 1 ? windows[0] : nil
+    guard canAuthorizeExactWindow(identityResolverAvailable: identity.available) else { return nil }
+    return windows.first { identity.windowID(for: $0) == candidate.id }
 }

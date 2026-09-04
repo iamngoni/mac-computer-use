@@ -139,4 +139,55 @@ final class CoreContractTests: XCTestCase {
         let statusImage = makeAutomationStatusImage(appIcon: appIcon)
         XCTAssertEqual(statusImage.size, NSSize(width: 52, height: 18))
     }
+
+    func testExactWindowAuthorizationRequiresIdentityResolver() {
+        XCTAssertTrue(canAuthorizeExactWindow(identityResolverAvailable: true))
+        XCTAssertFalse(canAuthorizeExactWindow(identityResolverAvailable: false))
+    }
+
+    func testOpenAppSuccessRequiresResolvedApplicationIdentity() {
+        let completion = completeOpenAppLaunch(
+            spec: "Ghost App",
+            launchResult: (ok: true, msg: "Launched Ghost App."),
+            timeout: 0,
+            resolver: { nil }
+        )
+
+        XCTAssertNil(completion.app)
+        XCTAssertEqual(completion.result["isError"] as? Bool, true)
+    }
+
+    func testBoundedStateSearchDoesNotConfuseTruncationWithAbsence() {
+        let result = boundedDepthFirstSearch(
+            roots: [0],
+            maxNodes: 5_000,
+            children: { node in node < 5_999 ? [node + 1] : [] },
+            matches: { $0 == 5_500 }
+        )
+
+        XCTAssertEqual(result, .truncated)
+    }
+
+    func testUnavailableScreenshotDoesNotClaimInputAuthority() {
+        let note = unavailableSnapshotNote(screenRecordingGranted: false)
+
+        XCTAssertTrue(note.contains("read-only"))
+        XCTAssertTrue(note.contains("not authorized for input"))
+        XCTAssertFalse(note.contains("fully usable"))
+        XCTAssertFalse(note.contains("global screen points"))
+    }
+
+    func testJSONWireTypesDoNotCrossCastBooleansAndNumbers() throws {
+        let data = Data(#"{"boolean":true,"integer":1,"fraction":1.5}"#.utf8)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertNil(strictJSONInteger(object["boolean"]))
+        XCTAssertNil(strictJSONDouble(object["boolean"]))
+        XCTAssertNil(strictJSONBoolean(object["integer"]))
+        XCTAssertEqual(strictJSONInteger(object["integer"]), 1)
+        XCTAssertEqual(strictJSONDouble(object["fraction"]), 1.5)
+        XCTAssertEqual(strictJSONBoolean(object["boolean"]), true)
+    }
 }

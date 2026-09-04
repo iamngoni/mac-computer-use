@@ -460,6 +460,7 @@ struct OverlayIPCPaths {
 final class OverlayController {
     static let shared = OverlayController()
     private let lock = NSLock()
+    private let agentLaunchLock = NSLock()
     private let paths = OverlayIPCPaths(ownerPID: getpid())
     private var controlling = false, cancelling = false, status = ""
     private var currentApp: String?
@@ -511,6 +512,12 @@ final class OverlayController {
                 while true {
                     if FileManager.default.fileExists(atPath: self.paths.cancelURL.path) {
                         cancelFlag.set(true)
+                    }
+                    self.lock.lock()
+                    let shouldSupervise = self.agentLaunched
+                    self.lock.unlock()
+                    if shouldSupervise, self.readyAgentPID() == nil {
+                        _ = self.ensureAgent()
                     }
                     Thread.sleep(forTimeInterval: 0.03)
                 }
@@ -604,14 +611,16 @@ final class OverlayController {
         return pid
     }
 
-    private func ensureAgent() -> Bool {
-        guard prepareIPC() else { return false }
-        if readyAgentPID() != nil {
+    private func ensureAgent() -> pid_t? {
+        agentLaunchLock.lock()
+        defer { agentLaunchLock.unlock() }
+        guard prepareIPC() else { return nil }
+        if let readyPID = readyAgentPID() {
             lock.lock()
             agentLaunched = true
             lastError = nil
             lock.unlock()
-            return true
+            return readyPID
         }
 
         try? FileManager.default.removeItem(at: paths.readyURL)
@@ -657,16 +666,20 @@ final class OverlayController {
         }
         if let launchFailure {
             recordError("overlay launch failed after 3 attempts: \(launchFailure)")
-            return false
+            return nil
         }
 
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
-            if readyAgentPID() != nil { return true }
+            if let readyPID = readyAgentPID() { return readyPID }
             usleep(20_000)
         } while ProcessInfo.processInfo.systemUptime < deadline
         recordError("overlay agent did not become ready within 2 seconds")
-        return false
+        return nil
+    }
+
+    func agentLeaseIsLive(_ pid: pid_t) -> Bool {
+        readyAgentPID() == pid
     }
 
     private func writeState() {
@@ -698,8 +711,8 @@ final class OverlayController {
         appPID: pid_t?,
         appName: String?,
         targetQuartz: CGRect?
-    ) -> Bool {
-        guard ensureAgent() else { return false }
+    ) -> pid_t? {
+        guard let agentPID = ensureAgent() else { return nil }
         let resolvedApp = appName ?? appPID.flatMap {
             NSRunningApplication(processIdentifier: $0)?.localizedName
         }
@@ -717,7 +730,7 @@ final class OverlayController {
         lingerUntil = 0
         lock.unlock()
         writeState()
-        return true
+        return agentPID
     }
     func updateControlledApplication(pid: pid_t, name: String) {
         let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -754,7 +767,7 @@ func controlled(
 ) -> [String: Any] {
     cancelFlag.set(false)
     OverlayController.shared.resetCancellation()
-    guard OverlayController.shared.begin(
+    guard let agentPID = OverlayController.shared.begin(
         status: status,
         appPID: appPID,
         appName: appName,
@@ -762,8 +775,30 @@ func controlled(
     ) else {
         return toolText("Automation overlay agent is unavailable; action was not delivered.", isError: true)
     }
+
+    let actionComplete = Flag()
+    let leaseFailed = Flag()
+    Thread.detachNewThread {
+        while !actionComplete.value {
+            if !OverlayController.shared.agentLeaseIsLive(agentPID) {
+                leaseFailed.set(true)
+                cancelFlag.set(true)
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
     let result = body()
+    actionComplete.set(true)
+    let leaseStillLive = OverlayController.shared.agentLeaseIsLive(agentPID)
     OverlayController.shared.end()
+    if leaseFailed.value || !leaseStillLive {
+        return toolText(
+            "Automation overlay agent exited during the action; input delivery was stopped.",
+            isError: true
+        )
+    }
     return result
 }
 

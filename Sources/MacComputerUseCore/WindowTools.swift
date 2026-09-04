@@ -13,7 +13,7 @@ func toolListWindows(_ args: [String: Any]) -> [String: Any] {
             return toolText("list_windows 'app' must be non-empty when supplied.", isError: true)
         }
         guard let app = resolveApp(requested) else {
-            return toolText("App not found: \(requested). Try list_apps.", isError: true)
+            return toolText(applicationTargetError(requested), isError: true)
         }
         apps = [app]
     } else {
@@ -44,8 +44,8 @@ func toolListWindows(_ args: [String: Any]) -> [String: Any] {
 func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
     let appSpec = ((args["app"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !appSpec.isEmpty else { return toolText("set_window_frame needs 'app'.", isError: true) }
-    guard let app = resolveApp(appSpec) else { return toolText("App not found: \(appSpec). Try list_apps.", isError: true) }
-    guard let rawWindowId = args["window_id"] as? Int,
+    guard let app = resolveApp(appSpec) else { return toolText(applicationTargetError(appSpec), isError: true) }
+    guard let rawWindowId = strictJSONInteger(args["window_id"]),
           let windowId = UInt32(exactly: rawWindowId), windowId > 0 else {
         return toolText("set_window_frame needs a positive integer window_id from list_windows.", isError: true)
     }
@@ -56,11 +56,18 @@ func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
         _ = ensureTrusted()
         return toolText("Not Accessibility-trusted yet.", isError: true)
     }
+    let coordinateLimit = 1_000_000.0
     guard let x = num(args, "x"), let y = num(args, "y"),
           let width = num(args, "width"), let height = num(args, "height"),
           x.isFinite, y.isFinite, width.isFinite, height.isFinite,
+          abs(x) <= coordinateLimit, abs(y) <= coordinateLimit,
+          abs(x + width) <= coordinateLimit, abs(y + height) <= coordinateLimit,
           width >= 64, height >= 64, width <= 20_000, height <= 20_000 else {
-        return toolText("set_window_frame needs finite x,y and width,height between 64 and 20000.", isError: true)
+        return toolText(
+            "set_window_frame values are outside the supported range: x,y and frame edges must be "
+                + "within -1000000...1000000; width,height must be 64...20000.",
+            isError: true
+        )
     }
 
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
@@ -99,6 +106,12 @@ func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
                 && abs(actual.minY - expected.minY) <= 2
                 && abs(actual.width - expected.width) <= 2
                 && abs(actual.height - expected.height) <= 2
+        }
+
+        func describe(_ rect: CGRect) -> String {
+            "(x:\(String(format: "%.0f", rect.minX)), y:\(String(format: "%.0f", rect.minY)), "
+                + "width:\(String(format: "%.0f", rect.width)), "
+                + "height:\(String(format: "%.0f", rect.height)))"
         }
 
         func rollback() -> String? {
@@ -145,20 +158,19 @@ func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
                 .first(where: { $0.id == windowId })?.bounds
             if let actual, matches(actual, requested) {
                 return toolText(
-                    "Set window_id=\(windowId) frame. Actual bounds=(x:\(Int(actual.minX)), "
-                    + "y:\(Int(actual.minY)), width:\(Int(actual.width)), height:\(Int(actual.height)))."
+                    "Set window_id=\(windowId) frame. Actual bounds=\(describe(actual))."
                 )
             }
             if ProcessInfo.processInfo.systemUptime >= deadline { break }
             usleep(20_000)
         } while true
 
-        let observed = actual.map {
-            "(x:\(Int($0.minX)), y:\(Int($0.minY)), width:\(Int($0.width)), height:\(Int($0.height)))"
-        } ?? "missing"
+        let observedBeforeRollback = actual
+        let rollbackError = rollback()
+        let observed = observedBeforeRollback.map(describe) ?? "missing"
         let failure = "Window frame verification failed for window_id=\(windowId). Requested "
-            + "(x:\(Int(x)), y:\(Int(y)), width:\(Int(width)), height:\(Int(height))); observed \(observed)"
-        if let rollbackError = rollback() {
+            + "\(describe(requested)); observed \(observed)"
+        if let rollbackError {
             return toolText("\(failure); rollback failed: \(rollbackError).", isError: true)
         }
         return toolText("\(failure); original frame restored.", isError: true)

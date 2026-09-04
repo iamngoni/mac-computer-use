@@ -101,7 +101,7 @@ class MCPContractTests(unittest.TestCase):
         )
         result = response["result"]
         self.assertTrue(result.get("isError"), text_content(result))
-        self.assertIn("App not found", text_content(result))
+        self.assertIn("did not uniquely identify one live app", text_content(result))
 
     def test_health_report_is_permission_free_and_machine_readable(self) -> None:
         result = self.client.call_tool("health_report")

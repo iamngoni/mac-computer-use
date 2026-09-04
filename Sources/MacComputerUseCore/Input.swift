@@ -12,16 +12,23 @@ import Darwin
 // post to the global HID tap, so they cannot move or click the user's hardware pointer.
 func postEvent(_ event: CGEvent, pid: pid_t) { event.postToPid(pid) }
 
-func mouseClick(_ pt: CGPoint, button: CGMouseButton, count: Int, pid: pid_t) {
+func mouseClick(
+    _ pt: CGPoint,
+    button: CGMouseButton,
+    count: Int,
+    pid: pid_t,
+    authorize: () -> Bool
+) -> Bool {
     let (down, up): (CGEventType, CGEventType) = button == .right ? (.rightMouseDown, .rightMouseUp)
         : (button == .center ? (.otherMouseDown, .otherMouseUp) : (.leftMouseDown, .leftMouseUp))
     for i in 1...max(1, count) {
-        if cancelFlag.value { return }
+        if cancelFlag.value || !authorize() { return false }
         OverlayController.shared.flashClickQuartz(pt)
         if let e = CGEvent(mouseEventSource: nil, mouseType: down, mouseCursorPosition: pt, mouseButton: button) { e.setIntegerValueField(.mouseEventClickState, value: Int64(i)); postEvent(e, pid: pid) }
         if let e = CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: pt, mouseButton: button) { e.setIntegerValueField(.mouseEventClickState, value: Int64(i)); postEvent(e, pid: pid) }
         usleep(40_000)
     }
+    return true
 }
 func mouseMoveTo(_ pt: CGPoint, pid: pid_t) { if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) { postEvent(e, pid: pid) } }
 

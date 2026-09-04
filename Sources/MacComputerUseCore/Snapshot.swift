@@ -47,9 +47,8 @@ func inputScreenPointIsAuthorized(_ point: CGPoint, context: SnapshotContext) ->
         && pixel.x < context.pixelWidth && pixel.y < context.pixelHeight
 }
 
-func authorizedSnapshot(forPid pid: pid_t) -> SnapshotContext? {
-    guard let snapshot = lastSnapshot, snapshot.pid == pid,
-          let candidate = windowCandidates(forPid: pid).first(where: {
+func snapshotContextIsCurrent(_ snapshot: SnapshotContext) -> Bool {
+    guard let candidate = windowCandidates(forPid: snapshot.pid).first(where: {
               $0.id == snapshot.windowId
           }),
           abs(candidate.bounds.minX - snapshot.windowBounds.minX) <= 2,
@@ -58,9 +57,19 @@ func authorizedSnapshot(forPid pid: pid_t) -> SnapshotContext? {
           abs(candidate.bounds.height - snapshot.windowBounds.height) <= 2,
           accessibilityWindow(
               matching: candidate,
-              in: AXUIElementCreateApplication(pid)
+              in: AXUIElementCreateApplication(snapshot.pid)
           ) != nil else {
-        return nil
+        return false
     }
+    return true
+}
+
+func inputScreenPointIsCurrentlyAuthorized(_ point: CGPoint, context: SnapshotContext) -> Bool {
+    inputScreenPointIsAuthorized(point, context: context) && snapshotContextIsCurrent(context)
+}
+
+func authorizedSnapshot(forPid pid: pid_t) -> SnapshotContext? {
+    guard let snapshot = lastSnapshot, snapshot.pid == pid,
+          snapshotContextIsCurrent(snapshot) else { return nil }
     return snapshot
 }

@@ -14,16 +14,24 @@ func toolListApps() -> [String: Any] {
     let apps = runningApps().map { "- \($0.localizedName ?? "?")  [\($0.bundleIdentifier ?? "")] pid=\($0.processIdentifier)\($0.isActive ? " (active)" : "")" }
     return toolText("Running apps:\n" + apps.joined(separator: "\n"))
 }
+
+func unavailableSnapshotNote(screenRecordingGranted: Bool) -> String {
+    let reason = screenRecordingGranted
+        ? "No capturable window is available."
+        : "Screenshot unavailable: enable mac-computer-use in System Settings > Privacy & Security > Screen Recording."
+    return "\n(\(reason) The accessibility tree below is read-only; its element indices and coordinates are not authorized for input.)"
+}
+
 func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
     let appSpec = (args["app"] as? String) ?? ""
-    guard let app = resolveApp(appSpec) else { return toolText("App not found: \(appSpec). Try list_apps.", isError: true) }
+    guard let app = resolveApp(appSpec) else { return toolText(applicationTargetError(appSpec), isError: true) }
     // Do NOT activate — we inspect in the background. AX reads the tree regardless of
     // focus; the screenshot is captured by window id so it works even when occluded.
     if !AXIsProcessTrusted() { _ = ensureTrusted(); return toolText("Not Accessibility-trusted yet. Enable mac-computer-use in System Settings > Privacy & Security > Accessibility, then retry.", isError: true) }
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
 
     let requestedWindowId: CGWindowID? = {
-        if let value = args["window_id"] as? Int, value > 0 { return UInt32(exactly: value) }
+        if let value = strictJSONInteger(args["window_id"]), value > 0 { return UInt32(exactly: value) }
         if let value = args["window_id"] as? String, let parsed = UInt32(value), parsed > 0 { return parsed }
         return nil
     }()
@@ -64,13 +72,37 @@ func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
         win = preferredAXWindow
     }
 
-    let maxNodes = max(1, (args["max_tree_nodes"] as? Int) ?? 1200)
-    let maxDepth = max(1, (args["max_tree_depth"] as? Int) ?? 64)
-    let textLimit: Int = {
-        if let s = args["text_limit"] as? String { return s.lowercased() == "max" ? Int.max : (Int(s).map { max(1, $0) } ?? 500) }
-        if let i = args["text_limit"] as? Int { return max(1, i) }
-        return 500
-    }()
+    let maxNodes: Int
+    if let supplied = args["max_tree_nodes"] {
+        guard let value = strictJSONInteger(supplied), (1...10_000).contains(value) else {
+            return toolText("max_tree_nodes must be an integer between 1 and 10000.", isError: true)
+        }
+        maxNodes = value
+    } else {
+        maxNodes = 1_200
+    }
+    let maxDepth: Int
+    if let supplied = args["max_tree_depth"] {
+        guard let value = strictJSONInteger(supplied), (1...256).contains(value) else {
+            return toolText("max_tree_depth must be an integer between 1 and 256.", isError: true)
+        }
+        maxDepth = value
+    } else {
+        maxDepth = 64
+    }
+    let textLimit: Int
+    if let supplied = args["text_limit"] {
+        if let value = strictJSONInteger(supplied), (1...100_000).contains(value) {
+            textLimit = value
+        } else if let value = supplied as? String,
+                  value.lowercased() == "max" {
+            textLimit = Int.max
+        } else {
+            return toolText("text_limit must be an integer between 1 and 100000 or the string 'max'.", isError: true)
+        }
+    } else {
+        textLimit = 500
+    }
 
     elementRegistry.removeAll(); var counter = 0; var nodes: [Node] = []
     walk(win, depth: 0, counter: &counter, out: &nodes, maxNodes: maxNodes, maxDepth: maxDepth, textLimit: textLimit)
@@ -92,10 +124,8 @@ func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
                               pixelWidth: CGFloat(png.width),
                               pixelHeight: CGFloat(png.height))
         note = "\nScreenshot: \(png.width)x\(png.height) px. Coordinates below and any x,y you pass back are in these screenshot pixels."
-    } else if !screenRecordingGranted() {
-        note = "\n(Screenshot unavailable: enable mac-computer-use in System Settings > Privacy & Security > Screen Recording. The accessibility tree below is fully usable meanwhile.)"
     } else {
-        note = "\n(No capturable window; coordinates below are global screen points.)"
+        note = unavailableSnapshotNote(screenRecordingGranted: screenRecordingGranted())
     }
     lastSnapshot = ctx
 
@@ -116,9 +146,9 @@ func unresolvedAppError(_ args: [String: Any]) -> [String: Any] {
           !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return toolText("Input action needs 'app'.", isError: true)
     }
-    return toolText("App not found: \(app). Try list_apps.", isError: true)
+    return toolText(applicationTargetError(app), isError: true)
 }
-func num(_ args: [String: Any], _ k: String) -> Double? { (args[k] as? Double) ?? (args[k] as? Int).map(Double.init) }
+func num(_ args: [String: Any], _ k: String) -> Double? { strictJSONDouble(args[k]) }
 
 // Element indices belong to the snapshot that produced them. The registry is global, so
 // without this guard an index from get_app_state("Chrome") would silently address a
@@ -140,26 +170,51 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     let count: Int
     if let suppliedCount = args["click_count"] {
-        guard let parsedCount = suppliedCount as? Int, (1...3).contains(parsedCount) else {
+        guard let parsedCount = strictJSONInteger(suppliedCount), (1...3).contains(parsedCount) else {
             return toolText("click_count must be an integer between 1 and 3.", isError: true)
         }
         count = parsedCount
     } else {
         count = 1
     }
-    let btnStr = (args["mouse_button"] as? String) ?? "left"
+    let btnStr: String
+    if let suppliedButton = args["mouse_button"] {
+        guard let parsedButton = suppliedButton as? String else {
+            return toolText("mouse_button must be a string.", isError: true)
+        }
+        btnStr = parsedButton
+    } else {
+        btnStr = "left"
+    }
     guard ["left", "right", "middle"].contains(btnStr) else {
         return toolText("mouse_button must be left, right, or middle.", isError: true)
     }
     let button: CGMouseButton = btnStr == "right" ? .right : (btnStr == "middle" ? .center : .left)
-    let method = ((args["click_method"] as? String) ?? "auto").lowercased()
+    let method: String
+    if let suppliedMethod = args["click_method"] {
+        guard let parsedMethod = suppliedMethod as? String else {
+            return toolText("click_method must be a string.", isError: true)
+        }
+        method = parsedMethod.lowercased()
+    } else {
+        method = "auto"
+    }
     guard ["auto", "accessibility", "app_post", "sky_click"].contains(method) else {
         return toolText("click_method must be auto, accessibility, app_post, or sky_click.", isError: true)
     }
     guard let ctx = authorizedSnapshot(forPid: pid) else {
         return toolText("click needs a fresh get_app_state snapshot for this app first.", isError: true)
     }
-    let idx: Int? = { if let xs = args["element_index"], let i = Int("\(xs)") { return i }; return nil }()
+    let idx: Int?
+    if let suppliedIndex = args["element_index"] {
+        guard let indexString = suppliedIndex as? String,
+              let parsedIndex = Int(indexString), parsedIndex >= 0 else {
+            return toolText("element_index must be a non-negative integer string.", isError: true)
+        }
+        idx = parsedIndex
+    } else {
+        idx = nil
+    }
     var pt: CGPoint?; var tgt: CGRect?
     if let i = idx {
         guard registryElement(i, forPid: pid) != nil else { return staleIndexError(i) }
@@ -186,7 +241,18 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
             if let c = elementCenter(i) { OverlayController.shared.flashClickQuartz(c) }
             if AXUIElementPerformAction(el, "AXPress" as CFString) == .success { return toolText("Pressed [\(i)] (AX, background).") }
             if method == "accessibility" { return toolText("AXPress failed on [\(i)].", isError: true) }
-            if let p = pt { mouseClick(p, button: .left, count: 1, pid: pid); return toolText("Clicked [\(i)] at \(describePoint(p, context: ctx)) (AXPress failed).") }
+            if let p = pt {
+                guard mouseClick(
+                    p,
+                    button: .left,
+                    count: 1,
+                    pid: pid,
+                    authorize: { inputScreenPointIsCurrentlyAuthorized(p, context: ctx) }
+                ) else {
+                    return toolText("Click snapshot became stale before delivery. Run get_app_state again.", isError: true)
+                }
+                return toolText("Clicked [\(i)] at \(describePoint(p, context: ctx)) (AXPress failed).")
+            }
             return toolText("AXPress failed and no coordinates available.", isError: true)
         }
     }
@@ -212,7 +278,16 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
         mouseMoveTo(p, pid: pid); usleep(120_000)
         if cancelFlag.value { return toolText("Cancelled (Esc).") }
-        mouseClick(p, button: button, count: count, pid: pid)
+        guard mouseClick(
+            p,
+            button: button,
+            count: count,
+            pid: pid,
+            authorize: { inputScreenPointIsCurrentlyAuthorized(p, context: ctx) }
+        ) else {
+            if cancelFlag.value { return toolText("Cancelled (Esc).") }
+            return toolText("Click snapshot became stale before delivery. Run get_app_state again.", isError: true)
+        }
         return toolText("Clicked \(btnStr) x\(count) at \(describePoint(p, context: ctx)) (application-scoped).")
     }
 }
@@ -239,7 +314,9 @@ func toolPressKey(_ args: [String: Any]) -> [String: Any] {
 }
 func toolScroll(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
-    let dir = (args["direction"] as? String) ?? "down"
+    guard let dir = args["direction"] as? String else {
+        return toolText("scroll needs string 'direction'.", isError: true)
+    }
     let pages: Double
     if args["pages"] != nil {
         guard let suppliedPages = num(args, "pages") else {
@@ -260,7 +337,11 @@ func toolScroll(_ args: [String: Any]) -> [String: Any] {
     }
     var tgt: CGRect?
     var point = CGPoint(x: ctx.windowBounds.midX, y: ctx.windowBounds.midY)
-    if let xs = args["element_index"], let idx = Int("\(xs)") {
+    if let suppliedIndex = args["element_index"] {
+        guard let indexString = suppliedIndex as? String,
+              let idx = Int(indexString), idx >= 0 else {
+            return toolText("element_index must be a non-negative integer string.", isError: true)
+        }
         guard registryElement(idx, forPid: pid) != nil else { return staleIndexError(idx) }
         if let center = elementCenter(idx) { point = center }
         tgt = elementFrame(idx)
@@ -381,10 +462,14 @@ func toolDefinitions() -> [ToolDefinition] {
                     ],
                     "max_tree_nodes": [
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10_000,
                         "description": "Max accessibility nodes to walk and render. Default 1200.",
                     ],
                     "max_tree_depth": [
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 256,
                         "description": "Max tree depth to walk. Default 64.",
                     ],
                 ],

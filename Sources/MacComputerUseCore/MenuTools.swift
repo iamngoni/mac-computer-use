@@ -36,7 +36,7 @@ private func menuElements(titled title: String, atNextLevelUnder root: AXUIEleme
 func toolInvokeMenu(_ args: [String: Any]) -> [String: Any] {
     let appSpec = ((args["app"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !appSpec.isEmpty else { return toolText("invoke_menu needs 'app'.", isError: true) }
-    guard let app = resolveApp(appSpec) else { return toolText("App not found: \(appSpec). Try list_apps.", isError: true) }
+    guard let app = resolveApp(appSpec) else { return toolText(applicationTargetError(appSpec), isError: true) }
     guard let rawPath = args["path"] as? [Any] else {
         return toolText("invoke_menu needs a path array.", isError: true)
     }

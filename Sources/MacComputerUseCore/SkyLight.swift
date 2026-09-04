@@ -134,16 +134,6 @@ func skyClickRecipe(clickCount: Int) -> [SkyStep] {
     return steps
 }
 
-// The snapshot's window must still exist, still belong to the app, and still be on screen.
-func skyWindowIsCurrent(windowId: CGWindowID, pid: pid_t) -> Bool {
-    guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowId) as? [[String: Any]] else { return false }
-    return list.contains { info in
-        (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowId
-            && (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
-            && ((info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false)
-    }
-}
-
 let skyClickLock = NSLock()
 
 func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> String? {
@@ -158,7 +148,7 @@ func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> St
           windowPoint.x <= bounds.width, windowPoint.y <= bounds.height else {
         return "sky_click target is outside the snapshot window bounds."
     }
-    guard skyWindowIsCurrent(windowId: ctx.windowId, pid: ctx.pid) else {
+    guard inputScreenPointIsCurrentlyAuthorized(screenPoint, context: ctx) else {
         return "sky_click target window is stale, off-screen, or no longer owned by \(ctx.appLabel). Run get_app_state again."
     }
     guard let source = CGEventSource(stateID: .hidSystemState) else { return "sky_click could not create an event source." }
@@ -180,9 +170,15 @@ func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> St
         Thread.sleep(forTimeInterval: 0.040)
     }
 
+    var deliveryError: String?
     for step in skyClickRecipe(clickCount: clickCount) {
         let pt = step.onTarget ? screenPoint : primer
         let local = step.onTarget ? windowPoint : primer
+        if step.onTarget, step.type == .leftMouseDown,
+           !inputScreenPointIsCurrentlyAuthorized(screenPoint, context: ctx) {
+            deliveryError = "sky_click snapshot became stale before delivery. Run get_app_state again."
+            break
+        }
         guard let e = CGEvent(mouseEventSource: source, mouseType: step.type, mouseCursorPosition: pt, mouseButton: .left) else { continue }
         spi.setField(e, SkyField.gesturePhase, step.phase)
         spi.setField(e, SkyField.clickState, step.clickState)
@@ -208,13 +204,13 @@ func skyClick(screenPoint: CGPoint, ctx: SnapshotContext, clickCount: Int) -> St
         _ = spi.postActivation(psn: psn, windowId: ctx.windowId, focused: false)
         Thread.sleep(forTimeInterval: 0.040)
     }
-    return nil
+    return deliveryError
 }
 
 func skyScroll(screenPoint: CGPoint, ctx: SnapshotContext, dx: Int32, dy: Int32) -> String? {
     let spi = SkyLight.shared
     guard spi.available else { return "background scroll unavailable: \(spi.unavailableReason)" }
-    guard skyWindowIsCurrent(windowId: ctx.windowId, pid: ctx.pid) else {
+    guard inputScreenPointIsCurrentlyAuthorized(screenPoint, context: ctx) else {
         return "Background scroll target is stale, off-screen, or no longer owned by \(ctx.appLabel). Run get_app_state again."
     }
     let bounds = ctx.windowBounds
@@ -249,7 +245,16 @@ func skyScroll(screenPoint: CGPoint, ctx: SnapshotContext, dx: Int32, dy: Int32)
         focusPSN = psn
         Thread.sleep(forTimeInterval: 0.040)
     }
+    defer {
+        if let psn = focusPSN {
+            _ = spi.postActivation(psn: psn, windowId: ctx.windowId, focused: false)
+            Thread.sleep(forTimeInterval: 0.040)
+        }
+    }
 
+    guard inputScreenPointIsCurrentlyAuthorized(screenPoint, context: ctx) else {
+        return "Background scroll snapshot became stale before delivery. Run get_app_state again."
+    }
     event.location = screenPoint
     spi.setField(event, SkyField.targetPID, Int64(ctx.pid))
     spi.setField(event, SkyField.windowNumber, Int64(ctx.windowId))
@@ -259,11 +264,6 @@ func skyScroll(screenPoint: CGPoint, ctx: SnapshotContext, dx: Int32, dy: Int32)
     spi.postToPid(event, pid: ctx.pid)
     event.postToPid(ctx.pid)
     Thread.sleep(forTimeInterval: 0.060)
-
-    if let psn = focusPSN {
-        _ = spi.postActivation(psn: psn, windowId: ctx.windowId, focused: false)
-        Thread.sleep(forTimeInterval: 0.040)
-    }
     return nil
 }
 
@@ -275,7 +275,8 @@ func skyDrag(
 ) -> String? {
     let spi = SkyLight.shared
     guard spi.available else { return "background drag unavailable: \(spi.unavailableReason)" }
-    guard skyWindowIsCurrent(windowId: ctx.windowId, pid: ctx.pid) else {
+    guard inputScreenPointIsCurrentlyAuthorized(start, context: ctx),
+          inputScreenPointIsCurrentlyAuthorized(end, context: ctx) else {
         return "Background drag target is stale, off-screen, or no longer owned by \(ctx.appLabel). Run get_app_state again."
     }
     let bounds = ctx.windowBounds
@@ -313,6 +314,10 @@ func skyDrag(
 
     let groupID = Int64(DispatchTime.now().uptimeNanoseconds % 1_000_000_000)
     func post(_ type: CGEventType, at point: CGPoint) -> Bool {
+        if type != .leftMouseUp,
+           !inputScreenPointIsCurrentlyAuthorized(point, context: ctx) {
+            return false
+        }
         guard let event = CGEvent(
             mouseEventSource: source,
             mouseType: type,
@@ -337,7 +342,7 @@ func skyDrag(
     }
 
     guard post(.leftMouseDown, at: start) else {
-        return "Background drag could not create mouse-down."
+        return "Background drag snapshot became stale before mouse-down. Run get_app_state again."
     }
     Thread.sleep(forTimeInterval: 0.060)
     var current = start
@@ -354,7 +359,7 @@ func skyDrag(
         )
         guard post(.leftMouseDragged, at: current) else {
             _ = post(.leftMouseUp, at: current)
-            return "Background drag could not create a dragged event."
+            return "Background drag snapshot became stale during delivery. Run get_app_state again."
         }
         Thread.sleep(forTimeInterval: 0.009)
     }
