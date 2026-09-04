@@ -97,6 +97,19 @@ Requires the Swift toolchain (Xcode or Command Line Tools).
 
 This compiles `main.swift` into `MacComputerUse.app` and ad-hoc code-signs it with a stable identifier (`com.modestnerd.mac-computer-use`) so macOS permission grants survive in-place rebuilds.
 
+## Test
+
+After building, run the live app-resolution regression:
+
+```bash
+python3 tests/test_live_app_resolution.py -v
+```
+
+The test holds one MCP process open while launching, inspecting, terminating, and
+relaunching a temporary GUI app. It verifies that the server drops the dead PID,
+resolves the replacement PID, and can capture the replacement window without an MCP
+restart.
+
 ## Permissions
 
 Grant these to **MacComputerUse.app** in *System Settings → Privacy & Security*:
@@ -132,9 +145,10 @@ open_app(app: "Music"); click(app: "Music", element_index: 7)  # play
 ## Layout
 
 ```
-main.swift                # the entire server + overlay agent
-build.sh                  # compile + sign into MacComputerUse.app
-THIRD_PARTY_NOTICES.md    # attribution for the SkyLight click recipe
+main.swift                         # the entire server + overlay agent
+build.sh                           # compile + sign into MacComputerUse.app
+tests/test_live_app_resolution.py # launch/restart regression for stale app PIDs
+THIRD_PARTY_NOTICES.md             # attribution for the SkyLight click recipe
 README.md
 ```
 
