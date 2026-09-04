@@ -3,6 +3,8 @@ MacComputerUse.app/
 *.o
 *.swiftmodule
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Temp capture/IPC files
 /tmp/maccu-*

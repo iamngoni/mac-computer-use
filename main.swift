@@ -2,9 +2,8 @@
 // Accessibility-tree driven control with a live "followable cursor" overlay.
 //
 // Architecture:
-//   - main thread runs NSApplication + the overlay GUI (window server work must be on main).
-//   - a background thread runs the MCP stdio JSON-RPC loop; tool calls synthesize input
-//     (CGEvent) off-main and marshal overlay updates to main.
+//   - the MCP process runs the synchronous stdio JSON-RPC loop and AX/CG actions.
+//   - a separate LaunchServices-launched overlay agent owns NSApplication's GUI run loop.
 //   - stdout is the protocol channel; ALL logs go to stderr.
 
 import Foundation
@@ -14,6 +13,7 @@ import CoreGraphics
 import QuartzCore
 import ImageIO
 import ScreenCaptureKit
+import Darwin
 
 // MARK: - Logging (stderr only)
 func log(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
@@ -319,13 +319,97 @@ func axActions(_ el: AXUIElement) -> [String] {
 }
 
 // MARK: - App resolution
-func runningApps() -> [NSRunningApplication] { NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular } }
+// NSWorkspace's application list is notification-backed. This process blocks its main
+// thread on stdio, so that list can retain a terminated app and miss its replacement.
+// WindowServer data is live even without an AppKit run loop; merge its owner PIDs into
+// each snapshot and reject PIDs that no longer exist.
+struct RunningAppSnapshot {
+    let apps: [NSRunningApplication]
+    let windowOwnerPIDs: Set<pid_t>
+}
+
+func processIsAlive(_ pid: pid_t) -> Bool {
+    guard pid > 0 else { return false }
+    if kill(pid, 0) == 0 { return true }
+    return errno == EPERM
+}
+
+func liveExecutablePath(for pid: pid_t) -> String? {
+    // PROC_PIDPATHINFO_MAXSIZE is 4 * MAXPATHLEN but the macro is unavailable
+    // to Swift because it contains a C expression.
+    var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+    guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+    return URL(fileURLWithPath: String(cString: buffer))
+        .resolvingSymlinksInPath()
+        .standardizedFileURL.path
+}
+
+func applicationMatchesLiveProcess(_ app: NSRunningApplication) -> Bool {
+    let pid = app.processIdentifier
+    guard processIsAlive(pid),
+          let reportedURL = app.executableURL,
+          let livePath = liveExecutablePath(for: pid) else { return false }
+    let reportedPath = reportedURL.resolvingSymlinksInPath().standardizedFileURL.path
+    return reportedPath == livePath
+}
+
+func currentWindowOwnerPIDs() -> Set<pid_t> {
+    let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+    guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return [] }
+    return Set(windows.compactMap { info in
+        guard let number = info[kCGWindowOwnerPID as String] as? NSNumber else { return nil }
+        let pid = pid_t(number.int32Value)
+        return processIsAlive(pid) ? pid : nil
+    })
+}
+
+func refreshWorkspaceApplicationCache() {
+    // NSWorkspace updates NSRunningApplication objects through the main run loop.
+    // The stdio server normally blocks that loop in readLine(), so briefly drain it
+    // at the boundary of each app lookup. The deadline keeps tool latency bounded.
+    let deadline = Date(timeIntervalSinceNow: 0.02)
+    while Date() < deadline && RunLoop.main.run(mode: .default, before: deadline) {}
+}
+
+func runningAppSnapshot() -> RunningAppSnapshot {
+    refreshWorkspaceApplicationCache()
+    let windowOwnerPIDs = currentWindowOwnerPIDs()
+    var seenPIDs = Set<pid_t>()
+    var apps: [NSRunningApplication] = []
+
+    func appendIfLiveRegular(_ app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard app.activationPolicy == .regular,
+              applicationMatchesLiveProcess(app),
+              seenPIDs.insert(pid).inserted else { return }
+        apps.append(app)
+    }
+
+    // Preserve NSWorkspace's normal ordering for existing callers, then append apps
+    // discovered from live windows that its stale cache omitted.
+    NSWorkspace.shared.runningApplications.forEach(appendIfLiveRegular)
+    for pid in windowOwnerPIDs.sorted() where !seenPIDs.contains(pid) {
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            appendIfLiveRegular(app)
+        }
+    }
+    return RunningAppSnapshot(apps: apps, windowOwnerPIDs: windowOwnerPIDs)
+}
+
+func runningApps() -> [NSRunningApplication] { runningAppSnapshot().apps }
+
 func resolveApp(_ spec: String) -> NSRunningApplication? {
-    let apps = runningApps()
-    if let a = apps.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(spec) == .orderedSame }) { return a }
-    if let a = apps.first(where: { $0.localizedName?.caseInsensitiveCompare(spec) == .orderedSame }) { return a }
-    if let a = apps.first(where: { ($0.localizedName ?? "").lowercased().contains(spec.lowercased()) }) { return a }
-    if let a = apps.first(where: { $0.bundleURL?.path.caseInsensitiveCompare(spec) == .orderedSame }) { return a }
+    guard !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    let snapshot = runningAppSnapshot()
+    func bestMatch(_ predicate: (NSRunningApplication) -> Bool) -> NSRunningApplication? {
+        let matches = snapshot.apps.filter(predicate)
+        return matches.first(where: { snapshot.windowOwnerPIDs.contains($0.processIdentifier) }) ?? matches.first
+    }
+
+    if let app = bestMatch({ $0.bundleIdentifier?.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
+    if let app = bestMatch({ $0.localizedName?.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
+    if let app = bestMatch({ ($0.localizedName ?? "").lowercased().contains(spec.lowercased()) }) { return app }
+    if let app = bestMatch({ $0.bundleURL?.path.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
     return nil
 }
 
@@ -998,7 +1082,18 @@ func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
 }
 func elementCenter(_ index: Int) -> CGPoint? { guard let el = elementRegistry[index], let f = axFrame(el) else { return nil }; return CGPoint(x: f.midX, y: f.midY) }
 func elementFrame(_ index: Int) -> CGRect? { elementRegistry[index].flatMap(axFrame) }
-func pidFor(_ args: [String: Any]) -> pid_t? { (args["app"] as? String).flatMap(resolveApp)?.processIdentifier }
+func pidFor(_ args: [String: Any]) -> pid_t? {
+    guard let spec = args["app"] as? String,
+          !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return resolveApp(spec)?.processIdentifier
+}
+func unresolvedAppError(_ args: [String: Any]) -> [String: Any] {
+    guard let app = args["app"] as? String,
+          !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return toolText("Input action needs 'app'.", isError: true)
+    }
+    return toolText("App not found: \(app). Try list_apps.", isError: true)
+}
 func num(_ args: [String: Any], _ k: String) -> Double? { (args[k] as? Double) ?? (args[k] as? Int).map(Double.init) }
 
 // Element indices belong to the snapshot that produced them. The registry is global, so
@@ -1029,7 +1124,7 @@ func describePoint(_ p: CGPoint, pid: pid_t?) -> String {
 }
 
 func toolClick(_ args: [String: Any]) -> [String: Any] {
-    let pid = pidFor(args)
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     let count = max(1, (args["click_count"] as? Int) ?? 1)
     let btnStr = (args["mouse_button"] as? String) ?? "left"
     let button: CGMouseButton = btnStr == "right" ? .right : (btnStr == "middle" ? .center : .left)
@@ -1071,7 +1166,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     // the caller should know the click did not land rather than get a silent retry that
     // steals focus.
     if method == "sky_click" {
-        guard let ctx = lastSnapshot, pid == nil || ctx.pid == pid else {
+        guard let ctx = lastSnapshot, ctx.pid == pid else {
             return toolText("sky_click needs a get_app_state snapshot for this app first.", isError: true)
         }
         guard button == .left else { return toolText("sky_click supports the left button only.", isError: true) }
@@ -1094,7 +1189,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
 }
 func toolTypeText(_ args: [String: Any]) -> [String: Any] {
     guard let t = args["text"] as? String else { return toolText("type_text needs 'text'.", isError: true) }
-    let pid = pidFor(args)
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     // Optionally focus a target element first (e.g. a text field) via AX.
     if let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) {
         AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue); usleep(60_000)
@@ -1103,11 +1198,11 @@ func toolTypeText(_ args: [String: Any]) -> [String: Any] {
 }
 func toolPressKey(_ args: [String: Any]) -> [String: Any] {
     guard let k = args["key"] as? String else { return toolText("press_key needs 'key'.", isError: true) }
-    let pid = pidFor(args)
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     return controlled("Pressing \(k)") { pressKeyCombo(k, pid: pid) ? toolText("Pressed \(k).") : toolText("Unknown key: \(k).", isError: true) }
 }
 func toolScroll(_ args: [String: Any]) -> [String: Any] {
-    let pid = pidFor(args)
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     let dir = (args["direction"] as? String) ?? "down"
     let pages = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init) ?? 1.0
     var tgt: CGRect?
@@ -1125,27 +1220,30 @@ func toolScroll(_ args: [String: Any]) -> [String: Any] {
     }
 }
 func toolSetValue(_ args: [String: Any]) -> [String: Any] {
-    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pidFor(args)) else { return toolText("set_value needs a valid element_index from this app's last get_app_state.", isError: true) }
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
+    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("set_value needs a valid element_index from this app's last get_app_state.", isError: true) }
     guard let v = args["value"] as? String else { return toolText("set_value needs 'value'.", isError: true) }
     return controlled("Setting value", targetQuartz: elementFrame(idx)) {
         AXUIElementSetAttributeValue(el, "AXValue" as CFString, v as CFString) == .success ? toolText("Set value of [\(idx)].") : toolText("Element not settable.", isError: true)
     }
 }
 func toolDrag(_ args: [String: Any]) -> [String: Any] {
-    let pid = pidFor(args)
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     guard let fx = num(args, "from_x"), let fy = num(args, "from_y"),
           let tx = num(args, "to_x"), let ty = num(args, "to_y") else { return toolText("drag needs from_x,from_y,to_x,to_y.", isError: true) }
     let from = inputPoint(x: fx, y: fy, pid: pid), to = inputPoint(x: tx, y: ty, pid: pid)
     return controlled("Dragging") { mouseDrag(from: from, to: to, pid: pid); return toolText("Dragged (\(Int(fx)),\(Int(fy))) -> (\(Int(tx)),\(Int(ty))).") }
 }
 func toolSecondaryAction(_ args: [String: Any]) -> [String: Any] {
-    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pidFor(args)) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
+    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
     guard let action = args["action"] as? String else { return toolText("needs 'action'.", isError: true) }
     let a = action.hasPrefix("AX") ? action : "AX\(action)"
     return controlled("Action \(a)", targetQuartz: elementFrame(idx)) { AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true) }
 }
 func toolSelectText(_ args: [String: Any]) -> [String: Any] {
-    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pidFor(args)) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
+    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
+    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
     return controlled("Selecting", targetQuartz: elementFrame(idx)) { _ = AXUIElementPerformAction(el, "AXPress" as CFString); return toolText("Focused [\(idx)].") }
 }
 
