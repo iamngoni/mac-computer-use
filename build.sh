@@ -6,15 +6,16 @@ cd "$(dirname "$0")"
 APP="MacComputerUse.app"
 ID="com.modestnerd.mac-computer-use"
 EXEC="mac-computer-use"
+VERSION="0.5.0"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 
-echo "Compiling…"
-swiftc -O main.swift -o "$APP/Contents/MacOS/$EXEC" \
-  -framework Foundation -framework AppKit -framework ApplicationServices \
-  -framework CoreGraphics -framework QuartzCore -framework ImageIO \
-  -framework ScreenCaptureKit
+echo "Compiling Swift package…"
+swift build -c release --product "$EXEC"
+BIN_DIR="$(swift build -c release --show-bin-path)"
+cp "$BIN_DIR/$EXEC" "$APP/Contents/MacOS/$EXEC"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,8 +25,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>mac-computer-use</string>
   <key>CFBundleDisplayName</key><string>Mac Computer Use</string>
   <key>CFBundleIdentifier</key><string>$ID</string>
-  <key>CFBundleVersion</key><string>0.5.0</string>
-  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>$EXEC</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
@@ -35,9 +36,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+plutil -lint "$APP/Contents/Info.plist"
+
 echo "Signing…"
 codesign --force --deep --options runtime --sign - --identifier "$ID" "$APP" 2>/dev/null || \
 codesign --force --deep --sign - --identifier "$ID" "$APP"
 
+codesign --verify --deep --strict "$APP"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
 echo "Built: $(pwd)/$APP/Contents/MacOS/$EXEC"

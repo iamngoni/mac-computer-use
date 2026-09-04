@@ -12,18 +12,19 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVER_BINARY = REPO_ROOT / "MacComputerUse.app/Contents/MacOS/mac-computer-use"
 SERVER_BINARY = Path(os.environ.get("MACCU_BINARY", DEFAULT_SERVER_BINARY))
-FIXTURE_BUNDLE_ID = "cc.antonlabs.maccu-live-app-fixture"
 FIXTURE_NAME = "MaccuLiveAppFixture"
 
 FIXTURE_SOURCE = r"""
@@ -43,13 +44,14 @@ app.activate(ignoringOtherApps: true)
 app.run()
 """
 
-INFO_PLIST = f"""<?xml version="1.0" encoding="UTF-8"?>
+def fixture_info_plist(bundle_id: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key><string>{FIXTURE_NAME}</string>
   <key>CFBundleDisplayName</key><string>{FIXTURE_NAME}</string>
-  <key>CFBundleIdentifier</key><string>{FIXTURE_BUNDLE_ID}</string>
+  <key>CFBundleIdentifier</key><string>{bundle_id}</string>
   <key>CFBundleExecutable</key><string>{FIXTURE_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><false/>
@@ -59,7 +61,8 @@ INFO_PLIST = f"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class MCPClient:
-    def __init__(self, binary: Path) -> None:
+    def __init__(self, binary: Path, response_timeout: float = 15) -> None:
+        self.response_timeout = response_timeout
         self.process = subprocess.Popen(
             [str(binary)],
             stdin=subprocess.PIPE,
@@ -69,7 +72,12 @@ class MCPClient:
             bufsize=1,
         )
         self._next_id = 1
-        self.request("initialize", {})
+        self.initialize_response: dict = {}
+        try:
+            self.initialize_response = self.request("initialize", {})
+        except Exception:
+            self.close()
+            raise
 
     def request(self, method: str, params: dict) -> dict:
         request_id = self._next_id
@@ -86,6 +94,16 @@ class MCPClient:
 
         assert self.process.stdout is not None
         while True:
+            readable, _, _ = select.select(
+                [self.process.stdout.fileno()],
+                [],
+                [],
+                self.response_timeout,
+            )
+            if not readable:
+                raise TimeoutError(
+                    f"MCP server did not reply to {method!r} within {self.response_timeout}s"
+                )
             line = self.process.stdout.readline()
             if not line:
                 raise RuntimeError("MCP server exited before replying")
@@ -102,12 +120,19 @@ class MCPClient:
 
     def close(self) -> None:
         if self.process.stdin is not None:
-            self.process.stdin.close()
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass
         try:
             self.process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             self.process.terminate()
-            self.process.wait(timeout=3)
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=3)
         if self.process.stdout is not None:
             self.process.stdout.close()
 
@@ -134,19 +159,18 @@ class LiveAppResolutionTests(unittest.TestCase):
     def setUp(self) -> None:
         if not SERVER_BINARY.exists():
             self.fail(f"Build the server first: missing {SERVER_BINARY}")
-        subprocess.run(
-            ["pkill", "-f", "/MaccuLiveAppFixture.app/Contents/MacOS/MaccuLiveAppFixture"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
         self.temp_dir = Path(tempfile.mkdtemp(prefix="maccu-live-app-test-"))
+        self.fixture_bundle_id = (
+            f"cc.antonlabs.maccu-live-app-fixture.run-{uuid.uuid4().hex}"
+        )
         self.bundle = self.temp_dir / f"{FIXTURE_NAME}.app"
         self.executable = self.bundle / f"Contents/MacOS/{FIXTURE_NAME}"
         self.executable.parent.mkdir(parents=True)
         source = self.temp_dir / "Fixture.swift"
         source.write_text(FIXTURE_SOURCE)
-        (self.bundle / "Contents/Info.plist").write_text(INFO_PLIST)
+        (self.bundle / "Contents/Info.plist").write_text(
+            fixture_info_plist(self.fixture_bundle_id)
+        )
         subprocess.run(
             [
                 "swiftc",
@@ -190,7 +214,7 @@ class LiveAppResolutionTests(unittest.TestCase):
 
     def listed_fixture_pids(self) -> list[int]:
         listing = text_content(self.client.call_tool("list_apps"))
-        matches = re.findall(rf"\[{re.escape(FIXTURE_BUNDLE_ID)}\] pid=(\d+)", listing)
+        matches = re.findall(rf"\[{re.escape(self.fixture_bundle_id)}\] pid=(\d+)", listing)
         self.assertTrue(matches, "long-lived MCP process returned a stale app snapshot")
         return [int(pid) for pid in matches]
 
@@ -198,7 +222,9 @@ class LiveAppResolutionTests(unittest.TestCase):
         deadline = time.monotonic() + 5
         last_state: dict = {}
         while time.monotonic() < deadline:
-            last_state = self.client.call_tool("get_app_state", {"app": FIXTURE_BUNDLE_ID})
+            last_state = self.client.call_tool(
+                "get_app_state", {"app": self.fixture_bundle_id}
+            )
             state_text = text_content(last_state)
             has_image = any(block.get("type") == "image" for block in last_state.get("content", []))
             if (
@@ -243,7 +269,7 @@ class LiveAppResolutionTests(unittest.TestCase):
 
     def test_same_server_resolves_app_launch_and_pid_replacement(self) -> None:
         before = text_content(self.client.call_tool("list_apps"))
-        self.assertNotIn(FIXTURE_BUNDLE_ID, before)
+        self.assertNotIn(self.fixture_bundle_id, before)
 
         first_pid = self.launch_fixture()
         self.assertEqual([first_pid], self.listed_fixture_pids())
@@ -251,7 +277,7 @@ class LiveAppResolutionTests(unittest.TestCase):
 
         self.stop_fixture(first_pid)
         after_stop = text_content(self.client.call_tool("list_apps"))
-        self.assertNotIn(FIXTURE_BUNDLE_ID, after_stop)
+        self.assertNotIn(self.fixture_bundle_id, after_stop)
 
         second_pid = self.launch_fixture()
         self.assertNotEqual(first_pid, second_pid)
