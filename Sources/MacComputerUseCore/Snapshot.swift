@@ -17,6 +17,8 @@ struct SnapshotContext {
     let windowId: CGWindowID
     let windowBounds: CGRect   // Quartz screen points
     let pixelScale: CGFloat    // screenshot pixels per screen point
+    let pixelWidth: CGFloat
+    let pixelHeight: CGFloat
 }
 var lastSnapshot: SnapshotContext?
 
@@ -27,4 +29,47 @@ func pixelToScreen(_ p: CGPoint, _ ctx: SnapshotContext) -> CGPoint {
 func screenToPixel(_ p: CGPoint, _ ctx: SnapshotContext) -> CGPoint {
     CGPoint(x: (p.x - ctx.windowBounds.minX) * ctx.pixelScale,
             y: (p.y - ctx.windowBounds.minY) * ctx.pixelScale)
+}
+
+func inputPoint(x: Double, y: Double, context: SnapshotContext) -> CGPoint? {
+    guard x.isFinite, y.isFinite,
+          x >= 0, y >= 0,
+          x < context.pixelWidth, y < context.pixelHeight else {
+        return nil
+    }
+    return pixelToScreen(CGPoint(x: x, y: y), context)
+}
+
+func inputScreenPointIsAuthorized(_ point: CGPoint, context: SnapshotContext) -> Bool {
+    let pixel = screenToPixel(point, context)
+    return pixel.x.isFinite && pixel.y.isFinite
+        && pixel.x >= 0 && pixel.y >= 0
+        && pixel.x < context.pixelWidth && pixel.y < context.pixelHeight
+}
+
+func snapshotContextIsCurrent(_ snapshot: SnapshotContext) -> Bool {
+    guard let candidate = windowCandidates(forPid: snapshot.pid).first(where: {
+              $0.id == snapshot.windowId
+          }),
+          abs(candidate.bounds.minX - snapshot.windowBounds.minX) <= 2,
+          abs(candidate.bounds.minY - snapshot.windowBounds.minY) <= 2,
+          abs(candidate.bounds.width - snapshot.windowBounds.width) <= 2,
+          abs(candidate.bounds.height - snapshot.windowBounds.height) <= 2,
+          accessibilityWindow(
+              matching: candidate,
+              in: AXUIElementCreateApplication(snapshot.pid)
+          ) != nil else {
+        return false
+    }
+    return true
+}
+
+func inputScreenPointIsCurrentlyAuthorized(_ point: CGPoint, context: SnapshotContext) -> Bool {
+    inputScreenPointIsAuthorized(point, context: context) && snapshotContextIsCurrent(context)
+}
+
+func authorizedSnapshot(forPid pid: pid_t) -> SnapshotContext? {
+    guard let snapshot = lastSnapshot, snapshot.pid == pid,
+          snapshotContextIsCurrent(snapshot) else { return nil }
+    return snapshot
 }

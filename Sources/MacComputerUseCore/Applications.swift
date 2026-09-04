@@ -87,19 +87,29 @@ func runningAppSnapshot() -> RunningAppSnapshot {
 
 func runningApps() -> [NSRunningApplication] { runningAppSnapshot().apps }
 
-func resolveApp(_ spec: String) -> NSRunningApplication? {
-    guard !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-    let snapshot = runningAppSnapshot()
-    func bestMatch(_ predicate: (NSRunningApplication) -> Bool) -> NSRunningApplication? {
-        let matches = snapshot.apps.filter(predicate)
-        return matches.first(where: { snapshot.windowOwnerPIDs.contains($0.processIdentifier) }) ?? matches.first
+func matchingApps(for spec: String) -> [NSRunningApplication] {
+    guard !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+    let apps = runningAppSnapshot().apps
+    let matchers: [(NSRunningApplication) -> Bool] = [
+        { $0.bundleIdentifier?.caseInsensitiveCompare(spec) == .orderedSame },
+        { $0.localizedName?.caseInsensitiveCompare(spec) == .orderedSame },
+        { ($0.localizedName ?? "").lowercased().contains(spec.lowercased()) },
+        { $0.bundleURL?.path.caseInsensitiveCompare(spec) == .orderedSame },
+    ]
+    for matcher in matchers {
+        let matches = apps.filter(matcher)
+        if !matches.isEmpty { return matches }
     }
+    return []
+}
 
-    if let app = bestMatch({ $0.bundleIdentifier?.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
-    if let app = bestMatch({ $0.localizedName?.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
-    if let app = bestMatch({ ($0.localizedName ?? "").lowercased().contains(spec.lowercased()) }) { return app }
-    if let app = bestMatch({ $0.bundleURL?.path.caseInsensitiveCompare(spec) == .orderedSame }) { return app }
-    return nil
+func resolveApp(_ spec: String) -> NSRunningApplication? {
+    let matches = matchingApps(for: spec)
+    return matches.count == 1 ? matches[0] : nil
+}
+
+func applicationTargetError(_ spec: String) -> String {
+    "Application target '\(spec)' did not uniquely identify one live app. Use an exact bundle identifier from list_apps."
 }
 
 // Bring an app to the front before synthesizing input, so keystrokes/clicks land in
@@ -131,10 +141,62 @@ func launchOrActivate(_ spec: String) -> (ok: Bool, msg: String) {
     return (p.terminationStatus == 0, p.terminationStatus == 0 ? "Launched \(spec)." : "App not found: \(spec).")
 }
 
+func completeOpenAppLaunch(
+    spec: String,
+    launchResult: (ok: Bool, msg: String),
+    timeout: TimeInterval = 5,
+    resolver: () -> NSRunningApplication?
+) -> (app: NSRunningApplication?, result: [String: Any]) {
+    guard launchResult.ok else {
+        return (nil, toolText(launchResult.msg, isError: true))
+    }
+
+    let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+    repeat {
+        if let app = resolver() {
+            return (app, toolText(launchResult.msg))
+        }
+        if ProcessInfo.processInfo.systemUptime >= deadline { break }
+        usleep(50_000)
+    } while true
+    return (
+        nil,
+        toolText(
+            "Open command completed, but '\(spec)' did not resolve to one live application.",
+            isError: true
+        )
+    )
+}
+
 func toolOpenApp(_ args: [String: Any]) -> [String: Any] {
-    guard let spec = args["app"] as? String, !spec.isEmpty else { return toolText("open_app needs 'app'.", isError: true) }
-    let r = launchOrActivate(spec)
-    return toolText(r.msg, isError: !r.ok)
+    guard let supplied = args["app"] as? String else {
+        return toolText("open_app needs 'app'.", isError: true)
+    }
+    let spec = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !spec.isEmpty else { return toolText("open_app needs 'app'.", isError: true) }
+    let initialMatches = matchingApps(for: spec)
+    guard initialMatches.count <= 1 else {
+        return toolText(applicationTargetError(spec), isError: true)
+    }
+    let existing = initialMatches.first
+    return controlled(
+        "Opening \(existing?.localizedName ?? spec)",
+        appPID: existing?.processIdentifier,
+        appName: existing?.localizedName
+    ) {
+        let completion = completeOpenAppLaunch(
+            spec: spec,
+            launchResult: launchOrActivate(spec),
+            resolver: { resolveApp(spec) }
+        )
+        if let resolved = completion.app {
+            OverlayController.shared.updateControlledApplication(
+                pid: resolved.processIdentifier,
+                name: resolved.localizedName ?? spec
+            )
+        }
+        return completion.result
+    }
 }
 
 // Run AppleScript and return (output, error). Used for reliable browser navigation and
@@ -158,24 +220,75 @@ func runAppleScript(_ script: String, timeout: TimeInterval = 30) -> (out: Strin
 // Set a browser's active-tab URL directly (background-safe, no keystroke/omnibox dance).
 // Works for Safari and any Chromium browser (Chrome, Brave, Edge, Arc, …).
 func toolNavigate(_ args: [String: Any]) -> [String: Any] {
-    let appSpec = (args["app"] as? String) ?? "Google Chrome"
-    guard var url = args["url"] as? String, !url.isEmpty else { return toolText("navigate needs 'url'.", isError: true) }
+    let appSpec: String
+    if let supplied = args["app"] {
+        guard let value = supplied as? String,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return toolText("navigate 'app' must be a non-empty string when supplied.", isError: true)
+        }
+        appSpec = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    } else {
+        appSpec = "Google Chrome"
+    }
+    let wantNewTab: Bool
+    if let supplied = args["new_tab"] {
+        guard let value = strictJSONBoolean(supplied) else {
+            return toolText("navigate 'new_tab' must be boolean when supplied.", isError: true)
+        }
+        wantNewTab = value
+    } else {
+        wantNewTab = false
+    }
+    let initialMatches = matchingApps(for: appSpec)
+    guard initialMatches.count <= 1 else {
+        return toolText(applicationTargetError(appSpec), isError: true)
+    }
+    guard var url = args["url"] as? String, !url.isEmpty else {
+        return toolText("navigate needs 'url'.", isError: true)
+    }
     if !url.contains("://") { url = "https://" + url }
-    let appName = resolveApp(appSpec)?.localizedName ?? appSpec
-    let esc = url.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-    let isSafari = appName.lowercased().contains("safari")
+
+    let targetApp: NSRunningApplication
+    if let existing = initialMatches.first {
+        targetApp = existing
+    } else {
+        let completion = completeOpenAppLaunch(
+            spec: appSpec,
+            launchResult: launchOrActivate(appSpec),
+            resolver: { resolveApp(appSpec) }
+        )
+        guard let resolved = completion.app else { return completion.result }
+        targetApp = resolved
+    }
+
+    let appName = targetApp.localizedName ?? appSpec
+    func escapedAppleScriptString(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+    let appReference: String
+    if let bundleID = targetApp.bundleIdentifier,
+       !bundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        appReference = "application id \"\(escapedAppleScriptString(bundleID))\""
+    } else {
+        appReference = "application \"\(escapedAppleScriptString(appName))\""
+    }
+    let esc = escapedAppleScriptString(url)
+    let isSafari = targetApp.bundleIdentifier == "com.apple.Safari"
+        || appName.lowercased().contains("safari")
     let tabExpr = isSafari ? "URL of current tab of front window" : "URL of active tab of front window"
     let newTab = isSafari
-        ? "tell application \"\(appName)\" to tell front window to set current tab to (make new tab with properties {URL:\"\(esc)\"})"
-        : "tell application \"\(appName)\" to tell front window to make new tab with properties {URL:\"\(esc)\"}"
-    let openWin = "tell application \"\(appName)\" to make new window"
-    let wantNewTab = (args["new_tab"] as? Bool) ?? false
-    // Ensure the app is running first (launch if needed, no foregrounding required for scripting).
-    if resolveApp(appSpec) == nil { _ = launchOrActivate(appSpec); usleep(700_000) }
-    return controlled("Navigating \(appName)") {
+        ? "tell \(appReference) to tell front window to set current tab to (make new tab with properties {URL:\"\(esc)\"})"
+        : "tell \(appReference) to tell front window to make new tab with properties {URL:\"\(esc)\"}"
+    let openWin = "tell \(appReference) to make new window"
+    return controlled(
+        "Navigating \(appName)",
+        appPID: targetApp.processIdentifier,
+        appName: appName
+    ) {
         let script = wantNewTab
             ? "try\n\(newTab)\non error\n\(openWin)\nend try"
-            : "try\ntell application \"\(appName)\" to set \(tabExpr) to \"\(esc)\"\non error\n\(openWin)\ntell application \"\(appName)\" to set \(tabExpr) to \"\(esc)\"\nend try"
+            : "try\ntell \(appReference) to set \(tabExpr) to \"\(esc)\"\non error\n\(openWin)\ntell \(appReference) to set \(tabExpr) to \"\(esc)\"\nend try"
         let r = runAppleScript(script)
         if r.err.isEmpty { return toolText("Navigated \(appName) to \(url).") }
         return toolText("Navigate failed: \(r.err). (If this is an Automation-permission prompt, approve it and retry.)", isError: true)

@@ -11,6 +11,12 @@ import Darwin
 func axCopy(_ el: AXUIElement, _ attr: String) -> AnyObject? {
     var v: AnyObject?; return AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success ? v : nil
 }
+func axElement(_ el: AXUIElement, _ attr: String) -> AXUIElement? {
+    guard let value = axCopy(el, attr), CFGetTypeID(value) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    return unsafeBitCast(value, to: AXUIElement.self)
+}
 func axStr(_ el: AXUIElement, _ attr: String) -> String? { axCopy(el, attr) as? String }
 func axArr(_ el: AXUIElement, _ attr: String) -> [AXUIElement] { (axCopy(el, attr) as? [AXUIElement]) ?? [] }
 func axFrame(_ el: AXUIElement) -> CGRect? {

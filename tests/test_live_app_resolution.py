@@ -8,6 +8,8 @@ being restarted or requiring an unrelated open_app call.
 
 from __future__ import annotations
 
+import base64
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -15,8 +17,10 @@ import re
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -32,14 +36,114 @@ import AppKit
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+let windowStyle: NSWindow.StyleMask = CommandLine.arguments.contains("fixed-size-window")
+    ? [.titled, .closable]
+    : [.titled, .closable, .resizable]
 let window = NSWindow(
     contentRect: NSRect(x: 200, y: 200, width: 320, height: 180),
-    styleMask: [.titled, .closable],
+    styleMask: windowStyle,
     backing: .buffered,
     defer: false
 )
 window.title = "Mac Computer Use Live App Fixture"
+
+final class FixtureClickView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.title = "Background Click Received"
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        window?.title = "Background Scroll Received"
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        window?.title = "Background Drag Received"
+    }
+}
+
+let clickView = FixtureClickView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+clickView.autoresizingMask = [.width, .height]
+window.contentView = clickView
+
+final class FixtureMenuTarget: NSObject {
+    let window: NSWindow
+    init(window: NSWindow) { self.window = window }
+
+    @objc func markInvoked() {
+        window.title = "Menu Action Invoked"
+    }
+}
+
+let menuTarget = FixtureMenuTarget(window: window)
+let menuBar = NSMenu(title: "Main")
+let applicationMenuItem = NSMenuItem(title: "Application", action: nil, keyEquivalent: "")
+applicationMenuItem.submenu = NSMenu(title: "Application")
+menuBar.addItem(applicationMenuItem)
+let fixtureMenuItem = NSMenuItem(title: "Fixture", action: nil, keyEquivalent: "")
+let fixtureMenu = NSMenu(title: "Fixture")
+let markItem = NSMenuItem(
+    title: "Mark Invoked",
+    action: #selector(FixtureMenuTarget.markInvoked),
+    keyEquivalent: ""
+)
+markItem.target = menuTarget
+fixtureMenu.addItem(markItem)
+fixtureMenuItem.submenu = fixtureMenu
+menuBar.addItem(fixtureMenuItem)
+if CommandLine.arguments.contains("duplicate-menu") {
+    let duplicateItem = NSMenuItem(title: "Fixture", action: nil, keyEquivalent: "")
+    let duplicateMenu = NSMenu(title: "Fixture")
+    let duplicateMark = NSMenuItem(
+        title: "Mark Invoked",
+        action: #selector(FixtureMenuTarget.markInvoked),
+        keyEquivalent: ""
+    )
+    duplicateMark.target = menuTarget
+    duplicateMenu.addItem(duplicateMark)
+    duplicateItem.submenu = duplicateMenu
+    menuBar.addItem(duplicateItem)
+}
+app.mainMenu = menuBar
+
+var secondaryWindow: NSWindow?
+final class NonKeyFixturePanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+var floatingPanel: NSPanel?
+if CommandLine.arguments.contains("two-windows") {
+    window.title = "Shared Window Title"
+    window.contentView = NSTextField(labelWithString: "Primary Window Marker")
+
+    let secondary = NSWindow(
+        contentRect: NSRect(x: 200, y: 200, width: 320, height: 180),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered,
+        defer: false
+    )
+    secondary.title = "Shared Window Title"
+    secondary.contentView = NSTextField(labelWithString: "Secondary Window Marker")
+    secondaryWindow = secondary
+    secondary.orderFront(nil)
+}
+
 window.makeKeyAndOrderFront(nil)
+if CommandLine.arguments.contains("floating-window") {
+    window.title = "Primary Fixture Window"
+    window.contentView = NSTextField(labelWithString: "Primary Window Marker")
+    let panel = NonKeyFixturePanel(
+        contentRect: NSRect(x: 240, y: 220, width: 260, height: 140),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: false
+    )
+    panel.title = "Floating Fixture Window"
+    panel.contentView = NSTextField(labelWithString: "Floating Window Marker")
+    floatingPanel = panel
+    panel.orderFront(nil)
+}
 app.activate(ignoringOtherApps: true)
 app.run()
 """
@@ -145,6 +249,82 @@ def text_content(result: dict) -> str:
     )
 
 
+def parse_list_windows(text: str) -> list[dict]:
+    windows: list[dict] = []
+    pattern = re.compile(
+        r'window_id=(?P<window_id>\d+).*?'
+        r'title="(?P<title>[^"]*)" '
+        r'bounds=\(x:(?P<x>-?[\d.]+), y:(?P<y>-?[\d.]+), '
+        r'width:(?P<width>[\d.]+), height:(?P<height>[\d.]+)\)'
+    )
+    for match in pattern.finditer(text):
+        values = match.groupdict()
+        windows.append(
+            {
+                "window_id": int(values["window_id"]),
+                "x": float(values["x"]),
+                "y": float(values["y"]),
+                "width": float(values["width"]),
+                "height": float(values["height"]),
+                "title": values["title"],
+            }
+        )
+    return windows
+
+
+class QuartzPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+def hardware_pointer_location() -> tuple[float, float]:
+    core_graphics = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+    )
+    core_foundation = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
+    core_graphics.CGEventCreate.argtypes = [ctypes.c_void_p]
+    core_graphics.CGEventCreate.restype = ctypes.c_void_p
+    core_graphics.CGEventGetLocation.argtypes = [ctypes.c_void_p]
+    core_graphics.CGEventGetLocation.restype = QuartzPoint
+    core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+    event = core_graphics.CGEventCreate(None)
+    if not event:
+        raise RuntimeError("CGEventCreate returned null")
+    try:
+        point = core_graphics.CGEventGetLocation(event)
+        return point.x, point.y
+    finally:
+        core_foundation.CFRelease(event)
+
+
+def png_dimensions(result: dict) -> tuple[int, int]:
+    image = next(block for block in result["content"] if block.get("type") == "image")
+    data = base64.b64decode(image["data"])
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise AssertionError("get_app_state image is not PNG")
+    return struct.unpack(">II", data[16:24])
+
+
+def frontmost_bundle_id() -> str:
+    front = subprocess.run(
+        ["/usr/bin/lsappinfo", "front"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    info = subprocess.run(
+        ["/usr/bin/lsappinfo", "info", front],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    match = re.search(r'bundleID="([^"]+)"', info)
+    if not match:
+        raise AssertionError(f"Could not read frontmost bundle ID: {info}")
+    return match.group(1)
+
+
 def fixture_pids(executable: Path) -> list[int]:
     probe = subprocess.run(
         ["pgrep", "-f", str(executable)],
@@ -193,8 +373,11 @@ class LiveAppResolutionTests(unittest.TestCase):
         self.client.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def launch_fixture(self) -> int:
-        subprocess.run(["open", "-na", str(self.bundle)], check=True)
+    def launch_fixture(self, *arguments: str) -> int:
+        command = ["open", "-na", str(self.bundle)]
+        if arguments:
+            command.extend(["--args", *arguments])
+        subprocess.run(command, check=True)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             pids = fixture_pids(self.executable)
@@ -246,6 +429,369 @@ class LiveAppResolutionTests(unittest.TestCase):
                 self.assertTrue(result.get("isError"), text_content(result))
                 self.assertIn("needs 'app'", text_content(result))
 
+    def test_click_rejects_global_hardware_pointer_mode(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        pointer_before = hardware_pointer_location()
+        result = self.client.call_tool(
+            "click",
+            {"app": self.fixture_bundle_id, "click_method": "global"},
+        )
+        pointer_after = hardware_pointer_location()
+
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("click_method must be", text_content(result))
+        self.assertLessEqual(abs(pointer_after[0] - pointer_before[0]), 1.0)
+        self.assertLessEqual(abs(pointer_after[1] - pointer_before[1]), 1.0)
+
+    def test_click_rejects_unbounded_coordinates_without_exiting(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "click",
+            {
+                "app": self.fixture_bundle_id,
+                "x": 1e20,
+                "y": 10,
+                "click_method": "app_post",
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("screenshot bounds", text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_click_rejects_coordinates_outside_snapshot(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        state = self.client.call_tool("get_app_state", {"app": self.fixture_bundle_id})
+        width, _ = png_dimensions(state)
+        result = self.client.call_tool(
+            "click",
+            {
+                "app": self.fixture_bundle_id,
+                "x": width,
+                "y": 10,
+                "click_method": "app_post",
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("screenshot bounds", text_content(result))
+
+    def test_click_rejects_unbounded_click_count_without_exiting(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "click",
+            {
+                "app": self.fixture_bundle_id,
+                "x": 10,
+                "y": 10,
+                "click_count": 1e20,
+                "click_method": "app_post",
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("click_count", text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_scroll_rejects_unbounded_pages_without_exiting(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "scroll",
+            {
+                "app": self.fixture_bundle_id,
+                "direction": "down",
+                "pages": 1e20,
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("pages", text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_scroll_rejects_malformed_pages_without_exiting(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "scroll",
+            {
+                "app": self.fixture_bundle_id,
+                "direction": "down",
+                "pages": "many",
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("pages", text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_click_rejects_supplied_fields_with_wrong_types(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        cases = (
+            {"x": 20, "y": 20, "click_method": "app_post", "mouse_button": 17},
+            {"x": 20, "y": 20, "click_method": 17},
+            {"x": 20, "y": 20, "click_method": "app_post", "element_index": "bogus"},
+            {"x": 20, "y": 20, "click_method": "app_post", "click_count": True},
+            {"x": True, "y": 20, "click_method": "app_post"},
+        )
+        for fields in cases:
+            with self.subTest(fields=fields):
+                result = self.client.call_tool(
+                    "click",
+                    {"app": self.fixture_bundle_id, **fields},
+                )
+                self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_scroll_rejects_missing_or_malformed_routing_fields(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        cases = (
+            {"direction": 17, "pages": 0.25},
+            {"pages": 0.25},
+            {"direction": "down", "pages": 0, "element_index": "bogus"},
+            {"direction": "down", "pages": True},
+        )
+        for fields in cases:
+            with self.subTest(fields=fields):
+                result = self.client.call_tool(
+                    "scroll",
+                    {"app": self.fixture_bundle_id, **fields},
+                )
+                self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_supplied_optional_fields_with_wrong_types_fail_closed(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        present_text = "Mac Computer Use Live App Fixture"
+        cases = (
+            (
+                "get_app_state",
+                {"app": self.fixture_bundle_id, "max_tree_nodes": "many"},
+                "max_tree_nodes",
+            ),
+            (
+                "get_app_state",
+                {"app": self.fixture_bundle_id, "max_tree_nodes": True},
+                "max_tree_nodes",
+            ),
+            (
+                "get_app_state",
+                {"app": self.fixture_bundle_id, "max_tree_depth": "deep"},
+                "max_tree_depth",
+            ),
+            (
+                "get_app_state",
+                {"app": self.fixture_bundle_id, "text_limit": "many"},
+                "text_limit",
+            ),
+            (
+                "verify_state",
+                {"app": self.fixture_bundle_id, "text": present_text, "condition": 17},
+                "condition",
+            ),
+            (
+                "verify_state",
+                {"app": self.fixture_bundle_id, "text": present_text, "timeout_ms": "long"},
+                "timeout_ms",
+            ),
+            (
+                "verify_state",
+                {"app": self.fixture_bundle_id, "text": present_text, "timeout_ms": True},
+                "timeout_ms",
+            ),
+            (
+                "verify_state",
+                {"app": self.fixture_bundle_id, "text": present_text, "poll_interval_ms": "fast"},
+                "poll_interval_ms",
+            ),
+            (
+                "verify_state",
+                {"app": self.fixture_bundle_id, "text": present_text, "role": 17},
+                "role",
+            ),
+            ("navigate", {"app": 17, "url": ""}, "app"),
+            (
+                "navigate",
+                {"app": self.fixture_bundle_id, "url": "", "new_tab": 17},
+                "new_tab",
+            ),
+            (
+                "navigate",
+                {"app": self.fixture_bundle_id, "url": "", "new_tab": 1},
+                "new_tab",
+            ),
+        )
+        for tool_name, arguments, field in cases:
+            with self.subTest(tool=tool_name, field=field):
+                result = self.client.call_tool(tool_name, arguments)
+                self.assertTrue(result.get("isError"), text_content(result))
+                self.assertIn(field, text_content(result))
+
+    def test_drag_rejects_coordinates_outside_snapshot_without_exiting(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "drag",
+            {
+                "app": self.fixture_bundle_id,
+                "from_x": 1e20,
+                "from_y": 10,
+                "to_x": 20,
+                "to_y": 20,
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("screenshot bounds", text_content(result))
+        self.assertIn("Running apps", text_content(self.client.call_tool("list_apps")))
+
+    def test_scroll_and_drag_require_snapshot_authority(self) -> None:
+        self.launch_fixture()
+        fresh_client = MCPClient(SERVER_BINARY)
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if self.fixture_bundle_id in text_content(
+                    fresh_client.call_tool("list_apps")
+                ):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("fresh server could not resolve fixture")
+
+            cases = [
+                (
+                    "click",
+                    {
+                        "app": self.fixture_bundle_id,
+                        "x": 10,
+                        "y": 10,
+                        "click_method": "app_post",
+                    },
+                ),
+                ("scroll", {"app": self.fixture_bundle_id, "direction": "down"}),
+                (
+                    "drag",
+                    {
+                        "app": self.fixture_bundle_id,
+                        "from_x": 10,
+                        "from_y": 10,
+                        "to_x": 20,
+                        "to_y": 20,
+                    },
+                ),
+            ]
+            for tool_name, arguments in cases:
+                with self.subTest(tool=tool_name):
+                    result = fresh_client.call_tool(tool_name, arguments)
+                    self.assertTrue(result.get("isError"), text_content(result))
+                    self.assertIn("get_app_state snapshot", text_content(result))
+        finally:
+            fresh_client.close()
+
+    def test_open_app_tracks_resolved_application_and_pid(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool("open_app", {"app": self.fixture_bundle_id})
+        self.assertFalse(result.get("isError"), text_content(result))
+
+        deadline = time.monotonic() + 3
+        overlay = None
+        while time.monotonic() < deadline:
+            overlay = json.loads(
+                text_content(self.client.call_tool("health_report"))
+            )["overlay"]
+            if overlay["status"] == "running":
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        self.assertEqual("running", overlay["status"], overlay)
+        self.assertEqual(FIXTURE_NAME, overlay["current_app"])
+        state = json.loads(Path(overlay["state_file"]).read_text())
+        self.assertEqual(fixture_pid, state["current_app_pid"])
+
+    def test_open_app_failure_does_not_record_phantom_controlled_app(self) -> None:
+        missing_app = f"Definitely Missing App {uuid.uuid4().hex}"
+        result = self.client.call_tool("open_app", {"app": missing_app})
+        self.assertTrue(result.get("isError"), text_content(result))
+
+        overlay = json.loads(text_content(self.client.call_tool("health_report")))["overlay"]
+        state = json.loads(Path(overlay["state_file"]).read_text())
+        self.assertNotEqual(missing_app, state["current_app"])
+        self.assertNotIn(missing_app, state["controlled_apps"])
+
+    def test_name_only_application_target_rejects_ambiguity(self) -> None:
+        first_pid = self.launch_fixture()
+        self.assert_fixture_state_available(first_pid)
+
+        duplicate_bundle_id = (
+            f"cc.antonlabs.maccu-live-app-fixture.duplicate-{uuid.uuid4().hex}"
+        )
+        duplicate_bundle = self.temp_dir / "DuplicateFixture.app"
+        shutil.copytree(self.bundle, duplicate_bundle)
+        (duplicate_bundle / "Contents/Info.plist").write_text(
+            fixture_info_plist(duplicate_bundle_id)
+        )
+        duplicate_executable = duplicate_bundle / f"Contents/MacOS/{FIXTURE_NAME}"
+        subprocess.run(["open", "-na", str(duplicate_bundle)], check=True)
+
+        deadline = time.monotonic() + 5
+        duplicate_pid = None
+        while time.monotonic() < deadline:
+            pids = fixture_pids(duplicate_executable)
+            if pids:
+                duplicate_pid = pids[0]
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(duplicate_pid, "duplicate fixture did not launch")
+        try:
+            deadline = time.monotonic() + 5
+            result = {}
+            while time.monotonic() < deadline:
+                result = self.client.call_tool("get_app_state", {"app": FIXTURE_NAME})
+                if result.get("isError"):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(result.get("isError"), text_content(result))
+            self.assertIn("not uniquely identify", text_content(result))
+
+            open_result = self.client.call_tool("open_app", {"app": FIXTURE_NAME})
+            self.assertTrue(open_result.get("isError"), text_content(open_result))
+            self.assertIn("not uniquely identify", text_content(open_result))
+
+            navigate_result = self.client.call_tool(
+                "navigate",
+                {"app": FIXTURE_NAME, "url": "http://127.0.0.1:9/"},
+            )
+            self.assertTrue(navigate_result.get("isError"), text_content(navigate_result))
+            self.assertIn("not uniquely identify", text_content(navigate_result))
+        finally:
+            if duplicate_pid is not None:
+                try:
+                    os.kill(duplicate_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    def test_type_text_with_element_index_requires_snapshot_authority(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        fresh_client = MCPClient(SERVER_BINARY)
+        try:
+            result = fresh_client.call_tool(
+                "type_text",
+                {
+                    "app": self.fixture_bundle_id,
+                    "element_index": 0,
+                    "text": "must not be delivered",
+                },
+            )
+            self.assertTrue(result.get("isError"), text_content(result))
+            self.assertIn("valid element_index", text_content(result))
+        finally:
+            fresh_client.close()
+
     def test_app_scoped_input_fails_closed_when_target_is_missing(self) -> None:
         missing_app = "cc.antonlabs.missing-input-target"
         cases = [
@@ -265,7 +811,877 @@ class LiveAppResolutionTests(unittest.TestCase):
             with self.subTest(tool=tool_name):
                 result = self.client.call_tool(tool_name, arguments)
                 self.assertTrue(result.get("isError"), text_content(result))
-                self.assertIn("App not found", text_content(result))
+                self.assertIn("did not uniquely identify one live app", text_content(result))
+
+    def test_get_app_state_targets_exact_window_id(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(r"window_id=(\d+)", listing)
+        self.assertIsNotNone(match, listing)
+        assert match is not None
+        window_id = int(match.group(1))
+
+        state = self.client.call_tool(
+            "get_app_state",
+            {"app": self.fixture_bundle_id, "window_id": window_id},
+        )
+        self.assertFalse(state.get("isError"), text_content(state))
+        self.assertIn(f"Window ID: {window_id}", text_content(state))
+        self.assertTrue(
+            any(block.get("type") == "image" for block in state.get("content", [])),
+            text_content(state),
+        )
+
+        invalid = self.client.call_tool(
+            "get_app_state",
+            {"app": self.fixture_bundle_id, "window_id": window_id + 10_000_000},
+        )
+        self.assertTrue(invalid.get("isError"), text_content(invalid))
+        self.assertIn("Window not found", text_content(invalid))
+
+    def test_exact_window_id_distinguishes_identical_title_and_frame(self) -> None:
+        fixture_pid = self.launch_fixture("two-windows")
+        self.assert_fixture_state_available(fixture_pid)
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        window_ids = [int(value) for value in re.findall(r"window_id=(\d+)", listing)]
+        self.assertGreaterEqual(len(window_ids), 2, listing)
+
+        states = [
+            text_content(
+                self.client.call_tool(
+                    "get_app_state",
+                    {"app": self.fixture_bundle_id, "window_id": window_id},
+                )
+            )
+            for window_id in window_ids[:2]
+        ]
+        self.assertTrue(any("Primary Window Marker" in state for state in states), states)
+        self.assertTrue(any("Secondary Window Marker" in state for state in states), states)
+
+    def test_default_snapshot_tree_matches_returned_window_identity(self) -> None:
+        self.launch_fixture("floating-window")
+        deadline = time.monotonic() + 5
+        listing = ""
+        while time.monotonic() < deadline:
+            listing = text_content(
+                self.client.call_tool(
+                    "list_windows",
+                    {"app": self.fixture_bundle_id},
+                )
+            )
+            if "Primary Fixture Window" in listing and "Floating Fixture Window" in listing:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(listing or "fixture windows were not listed")
+
+        identities = {
+            int(window_id): title
+            for window_id, title in re.findall(
+                r'window_id=(\d+).*?title="([^"]+)"',
+                listing,
+            )
+        }
+        result = self.client.call_tool(
+            "get_app_state",
+            {"app": self.fixture_bundle_id},
+        )
+        result_text = text_content(result)
+        self.assertFalse(result.get("isError"), result_text)
+        match = re.search(r"Window ID: (\d+)", result_text)
+        if match is None:
+            self.fail(result_text)
+        returned_id = int(match.group(1))
+        returned_title = identities[returned_id]
+        expected_marker = {
+            "Primary Fixture Window": "Primary Window Marker",
+            "Floating Fixture Window": "Floating Window Marker",
+        }[returned_title]
+        other_marker = {
+            "Primary Fixture Window": "Floating Window Marker",
+            "Floating Fixture Window": "Primary Window Marker",
+        }[returned_title]
+        self.assertIn(expected_marker, result_text)
+        self.assertNotIn(other_marker, result_text)
+
+    def test_verify_state_waits_for_present_and_missing_text(self) -> None:
+        self.launch_fixture()
+        present = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Mac Computer Use Live App Fixture",
+                "condition": "exists",
+                "timeout_ms": 1000,
+            },
+        )
+        self.assertFalse(present.get("isError"), text_content(present))
+        self.assertIn("Verified", text_content(present))
+
+        missing = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "cc.antonlabs.text-that-does-not-exist",
+                "condition": "exists",
+                "timeout_ms": 100,
+            },
+        )
+        self.assertTrue(missing.get("isError"), text_content(missing))
+        self.assertIn("Timed out", text_content(missing))
+
+    def test_verify_state_fails_if_target_exits_during_wait(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+
+        def kill_fixture() -> None:
+            try:
+                os.kill(fixture_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        timer = threading.Timer(0.2, kill_fixture)
+        timer.start()
+        try:
+            result = self.client.call_tool(
+                "verify_state",
+                {
+                    "app": self.fixture_bundle_id,
+                    "text": "Mac Computer Use Live App Fixture",
+                    "condition": "not_exists",
+                    "timeout_ms": 2_000,
+                    "poll_interval_ms": 50,
+                },
+            )
+        finally:
+            timer.cancel()
+
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("target exited or changed identity", text_content(result))
+
+    def test_set_window_frame_updates_windowserver_bounds(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(
+            r"window_id=(\d+).*bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+            listing,
+        )
+        self.assertIsNotNone(match, listing)
+        assert match is not None
+        window_id, x, y, width, height = map(int, match.groups())
+        expected = (x + 20, y + 20, width + 40, height + 30)
+
+        result = self.client.call_tool(
+            "set_window_frame",
+            {
+                "app": self.fixture_bundle_id,
+                "window_id": window_id,
+                "x": expected[0],
+                "y": expected[1],
+                "width": expected[2],
+                "height": expected[3],
+            },
+        )
+        self.assertFalse(result.get("isError"), text_content(result))
+
+        deadline = time.monotonic() + 2
+        observed = None
+        while time.monotonic() < deadline:
+            listing = text_content(
+                self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+            )
+            current = re.search(
+                rf"window_id={window_id}.*bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+                listing,
+            )
+            if current:
+                observed = tuple(map(int, current.groups()))
+                if all(abs(actual - wanted) <= 2 for actual, wanted in zip(observed, expected)):
+                    break
+            time.sleep(0.05)
+        self.assertIsNotNone(observed, listing)
+        assert observed is not None
+        self.assertTrue(
+            all(abs(actual - wanted) <= 2 for actual, wanted in zip(observed, expected)),
+            f"expected {expected}, observed {observed}",
+        )
+
+    def test_window_move_invalidates_old_snapshot_coordinates(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(
+            r"window_id=(\d+).*bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+            listing,
+        )
+        if match is None:
+            self.fail(listing)
+        window_id, x, y, width, height = map(int, match.groups())
+        moved = self.client.call_tool(
+            "set_window_frame",
+            {
+                "app": self.fixture_bundle_id,
+                "window_id": window_id,
+                "x": x + 80,
+                "y": y + 60,
+                "width": width,
+                "height": height,
+            },
+        )
+        self.assertFalse(moved.get("isError"), text_content(moved))
+
+        stale_click = self.client.call_tool(
+            "click",
+            {
+                "app": self.fixture_bundle_id,
+                "x": 20,
+                "y": 20,
+                "click_method": "app_post",
+            },
+        )
+        self.assertTrue(stale_click.get("isError"), text_content(stale_click))
+        self.assertIn("fresh get_app_state", text_content(stale_click))
+
+    def test_click_rejects_window_moved_during_preflight_delay(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        window = parse_list_windows(
+            text_content(
+                self.client.call_tool(
+                    "list_windows", {"app": self.fixture_bundle_id}
+                )
+            )
+        )[0]
+        warmed = self.client.call_tool("open_app", {"app": self.fixture_bundle_id})
+        self.assertFalse(warmed.get("isError"), text_content(warmed))
+
+        click_client = MCPClient(SERVER_BINARY)
+        try:
+            snapshot = click_client.call_tool(
+                "get_app_state", {"app": self.fixture_bundle_id}
+            )
+            self.assertFalse(snapshot.get("isError"), text_content(snapshot))
+            overlay = json.loads(
+                text_content(click_client.call_tool("health_report"))
+            )["overlay"]
+            state_path = Path(overlay["state_file"])
+            click_result: dict = {}
+            click_error: list[BaseException] = []
+
+            def run_click() -> None:
+                try:
+                    click_result.update(
+                        click_client.call_tool(
+                            "click",
+                            {
+                                "app": self.fixture_bundle_id,
+                                "x": 40,
+                                "y": 100,
+                                "click_method": "app_post",
+                            },
+                        )
+                    )
+                except BaseException as error:
+                    click_error.append(error)
+
+            click_thread = threading.Thread(target=run_click)
+            click_thread.start()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    state = json.loads(state_path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    time.sleep(0.005)
+                    continue
+                if state.get("controlling") and state.get("status") == "Clicking":
+                    break
+                time.sleep(0.005)
+            else:
+                self.fail("click did not enter its pre-delivery delay")
+
+            moved = self.client.call_tool(
+                "set_window_frame",
+                {
+                    "app": self.fixture_bundle_id,
+                    "window_id": window["window_id"],
+                    "x": window["x"] + 420,
+                    "y": window["y"],
+                    "width": window["width"],
+                    "height": window["height"],
+                },
+            )
+            self.assertFalse(moved.get("isError"), text_content(moved))
+            click_thread.join(timeout=3)
+            self.assertFalse(click_thread.is_alive(), "click request did not finish")
+            self.assertFalse(click_error, click_error)
+            self.assertTrue(click_result.get("isError"), text_content(click_result))
+            self.assertIn("stale", text_content(click_result).lower())
+        finally:
+            click_client.close()
+
+    def test_set_window_frame_rolls_back_when_size_is_rejected(self) -> None:
+        fixture_pid = self.launch_fixture("fixed-size-window")
+        self.assert_fixture_state_available(fixture_pid)
+        before = next(
+            window
+            for window in parse_list_windows(
+                text_content(self.client.call_tool("list_windows", {"app": self.fixture_bundle_id}))
+            )
+            if window["title"] == "Mac Computer Use Live App Fixture"
+        )
+        result = self.client.call_tool(
+            "set_window_frame",
+            {
+                "app": self.fixture_bundle_id,
+                "window_id": before["window_id"],
+                "x": before["x"] + 70,
+                "y": before["y"] + 50,
+                "width": before["width"] + 100,
+                "height": before["height"] + 80,
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        after = next(
+            window
+            for window in parse_list_windows(
+                text_content(self.client.call_tool("list_windows", {"app": self.fixture_bundle_id}))
+            )
+            if window["window_id"] == before["window_id"]
+        )
+        for key in ("x", "y", "width", "height"):
+            self.assertAlmostEqual(before[key], after[key], delta=2, msg=(before, after))
+
+    def test_set_window_frame_rejects_huge_coordinate_without_mutation(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        before = next(
+            window
+            for window in parse_list_windows(
+                text_content(self.client.call_tool("list_windows", {"app": self.fixture_bundle_id}))
+            )
+            if window["title"] == "Mac Computer Use Live App Fixture"
+        )
+        result = self.client.call_tool(
+            "set_window_frame",
+            {
+                "app": self.fixture_bundle_id,
+                "window_id": before["window_id"],
+                "x": 1e20,
+                "y": before["y"],
+                "width": before["width"],
+                "height": before["height"],
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("range", text_content(result))
+        after = next(
+            window
+            for window in parse_list_windows(
+                text_content(self.client.call_tool("list_windows", {"app": self.fixture_bundle_id}))
+            )
+            if window["window_id"] == before["window_id"]
+        )
+        for key in ("x", "y", "width", "height"):
+            self.assertAlmostEqual(before[key], after[key], delta=2, msg=(before, after))
+
+    def test_invoke_menu_runs_named_menu_path(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "invoke_menu",
+            {
+                "app": self.fixture_bundle_id,
+                "path": ["Fixture", "Mark Invoked"],
+            },
+        )
+        self.assertFalse(result.get("isError"), text_content(result))
+
+        changed = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Menu Action Invoked",
+                "condition": "exists",
+                "timeout_ms": 1000,
+            },
+        )
+        self.assertFalse(changed.get("isError"), text_content(changed))
+
+    def test_invoke_menu_missing_path_fails_closed(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "invoke_menu",
+            {
+                "app": self.fixture_bundle_id,
+                "path": ["Fixture", "Missing Action"],
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("path segment 2: Missing Action", text_content(result))
+
+        unchanged = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Menu Action Invoked",
+                "condition": "not_exists",
+                "timeout_ms": 200,
+            },
+        )
+        self.assertFalse(unchanged.get("isError"), text_content(unchanged))
+
+    def test_invoke_menu_rejects_omitted_parent_segment(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "invoke_menu",
+            {
+                "app": self.fixture_bundle_id,
+                "path": ["Mark Invoked"],
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("path segment 1", text_content(result))
+        unchanged = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Menu Action Invoked",
+                "condition": "not_exists",
+                "timeout_ms": 200,
+            },
+        )
+        self.assertFalse(unchanged.get("isError"), text_content(unchanged))
+
+    def test_invoke_menu_rejects_ambiguous_segment(self) -> None:
+        fixture_pid = self.launch_fixture("duplicate-menu")
+        self.assert_fixture_state_available(fixture_pid)
+        result = self.client.call_tool(
+            "invoke_menu",
+            {
+                "app": self.fixture_bundle_id,
+                "path": ["Fixture", "Mark Invoked"],
+            },
+        )
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("ambiguous path segment 1", text_content(result))
+
+    def test_sky_click_uses_virtual_cursor_without_moving_hardware_pointer(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        state = self.client.call_tool("get_app_state", {"app": self.fixture_bundle_id})
+        image_width, image_height = png_dimensions(state)
+        target_pixel = (image_width / 2, image_height * 0.65)
+
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(
+            r"bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+            listing,
+        )
+        self.assertIsNotNone(match, listing)
+        assert match is not None
+        x, y, width, _ = map(int, match.groups())
+        pixel_scale = image_width / width
+        expected_quartz = (
+            x + target_pixel[0] / pixel_scale,
+            y + target_pixel[1] / pixel_scale,
+        )
+
+        report = json.loads(text_content(self.client.call_tool("health_report")))
+        state_path = Path(report["overlay"]["state_file"])
+        frontmost_before = frontmost_bundle_id()
+        pointer_before = hardware_pointer_location()
+        result = self.client.call_tool(
+            "click",
+            {
+                "app": self.fixture_bundle_id,
+                "x": target_pixel[0],
+                "y": target_pixel[1],
+                "click_method": "sky_click",
+            },
+        )
+        pointer_after = hardware_pointer_location()
+        frontmost_after = frontmost_bundle_id()
+        self.assertFalse(result.get("isError"), text_content(result))
+        self.assertEqual(0o700, state_path.parent.stat().st_mode & 0o777)
+        self.assertEqual(frontmost_before, frontmost_after)
+        self.assertLessEqual(abs(pointer_after[0] - pointer_before[0]), 1.0)
+        self.assertLessEqual(abs(pointer_after[1] - pointer_before[1]), 1.0)
+
+        received = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Background Click Received",
+                "condition": "exists",
+                "timeout_ms": 1000,
+            },
+        )
+        self.assertFalse(received.get("isError"), text_content(received))
+
+        overlay_state = json.loads(state_path.read_text())
+        self.assertIn("cursor", overlay_state)
+        self.assertAlmostEqual(expected_quartz[0], overlay_state["cursor"][0], delta=2)
+        self.assertAlmostEqual(expected_quartz[1], overlay_state["cursor"][1], delta=2)
+
+        deadline = time.monotonic() + 3
+        overlay_health = None
+        while time.monotonic() < deadline:
+            overlay_health = json.loads(
+                text_content(self.client.call_tool("health_report"))
+            )["overlay"]
+            if overlay_health["status"] == "running":
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(overlay_health)
+        assert overlay_health is not None
+        self.assertEqual("running", overlay_health["status"], overlay_health)
+        self.assertIsInstance(overlay_health["agent_pid"], int)
+        ready = json.loads(Path(overlay_health["ready_file"]).read_text())
+        self.assertEqual(self.client.process.pid, ready["owner_pid"])
+        self.assertEqual(overlay_health["agent_pid"], ready["agent_pid"])
+        self.assertEqual(overlay_health["channel_id"], ready["channel_id"])
+        self.assertTrue(overlay_health["menu_bar_item_active"])
+        self.assertEqual(FIXTURE_NAME, overlay_health["current_app"])
+        self.assertIn(FIXTURE_NAME, overlay_health["controlled_apps"])
+        self.assertTrue(overlay_health["cursor_initialized"])
+
+        time.sleep(1.1)
+        persistent_state = json.loads(state_path.read_text())
+        self.assertFalse(persistent_state["controlling"])
+        self.assertEqual(FIXTURE_NAME, persistent_state["current_app"])
+        self.assertIn(FIXTURE_NAME, persistent_state["controlled_apps"])
+        self.assertEqual(overlay_state["cursor"], persistent_state["cursor"])
+
+    def test_overlay_agent_cleans_channel_after_owner_sigkill(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        secondary = MCPClient(SERVER_BINARY)
+        channel_directory = None
+        agent_pid = None
+        try:
+            launch_result = secondary.call_tool(
+                "press_key",
+                {"app": self.fixture_bundle_id, "key": "not-a-real-key"},
+            )
+            self.assertTrue(launch_result.get("isError"), text_content(launch_result))
+
+            deadline = time.monotonic() + 3
+            overlay_health = None
+            while time.monotonic() < deadline:
+                overlay_health = json.loads(
+                    text_content(secondary.call_tool("health_report"))
+                )["overlay"]
+                if overlay_health["status"] == "running":
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(overlay_health)
+            assert overlay_health is not None
+            self.assertEqual("running", overlay_health["status"], overlay_health)
+            agent_pid = overlay_health["agent_pid"]
+            channel_directory = Path(overlay_health["state_file"]).parent
+            self.assertTrue(channel_directory.exists(), channel_directory)
+
+            secondary.process.kill()
+            secondary.process.wait(timeout=3)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                channel_exists = channel_directory.exists()
+                try:
+                    os.kill(agent_pid, 0)
+                    agent_exists = True
+                except ProcessLookupError:
+                    agent_exists = False
+                if not channel_exists and not agent_exists:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(channel_directory.exists(), channel_directory)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(agent_pid, 0)
+        finally:
+            secondary.close()
+            if channel_directory is not None:
+                shutil.rmtree(channel_directory, ignore_errors=True)
+
+    def test_overlay_agent_relaunches_after_agent_sigkill(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        first_action = self.client.call_tool(
+            "press_key",
+            {"app": self.fixture_bundle_id, "key": "not-a-real-key"},
+        )
+        self.assertTrue(first_action.get("isError"), text_content(first_action))
+
+        deadline = time.monotonic() + 3
+        first_health = None
+        while time.monotonic() < deadline:
+            first_health = json.loads(
+                text_content(self.client.call_tool("health_report"))
+            )["overlay"]
+            if first_health["status"] == "running":
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(first_health)
+        assert first_health is not None
+        self.assertEqual("running", first_health["status"], first_health)
+        first_agent_pid = first_health["agent_pid"]
+        os.kill(first_agent_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(first_agent_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+
+        second_action = self.client.call_tool(
+            "press_key",
+            {"app": self.fixture_bundle_id, "key": "not-a-real-key"},
+        )
+        self.assertTrue(second_action.get("isError"), text_content(second_action))
+        deadline = time.monotonic() + 3
+        second_health = None
+        while time.monotonic() < deadline:
+            second_health = json.loads(
+                text_content(self.client.call_tool("health_report"))
+            )["overlay"]
+            if second_health["status"] == "running":
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(second_health)
+        assert second_health is not None
+        self.assertEqual("running", second_health["status"], second_health)
+        self.assertNotEqual(first_agent_pid, second_health["agent_pid"])
+
+    def test_overlay_agent_death_during_action_stops_input_and_fails(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        warmup = self.client.call_tool(
+            "press_key",
+            {"app": self.fixture_bundle_id, "key": "not-a-real-key"},
+        )
+        self.assertTrue(warmup.get("isError"), text_content(warmup))
+        overlay = json.loads(text_content(self.client.call_tool("health_report")))["overlay"]
+        agent_pid = overlay["agent_pid"]
+        state_path = Path(overlay["state_file"])
+        result: dict = {}
+        errors: list[BaseException] = []
+
+        def run_typing() -> None:
+            try:
+                result.update(
+                    self.client.call_tool(
+                        "type_text",
+                        {"app": self.fixture_bundle_id, "text": "a" * 700},
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=run_typing)
+        thread.start()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                state = json.loads(state_path.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(0.01)
+                continue
+            if state.get("controlling") and state.get("status") == "Typing":
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("typing action did not start")
+
+        os.kill(agent_pid, signal.SIGKILL)
+        thread.join(timeout=8)
+        self.assertFalse(thread.is_alive(), "typing did not stop after overlay death")
+        self.assertFalse(errors, errors)
+        self.assertTrue(result.get("isError"), text_content(result))
+        self.assertIn("overlay agent exited", text_content(result).lower())
+
+    def test_overlay_supervisor_relaunches_before_owner_cleanup(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        secondary = MCPClient(SERVER_BINARY)
+        channel_directory = None
+        replacement_pid = None
+        try:
+            warmup = secondary.call_tool(
+                "press_key",
+                {"app": self.fixture_bundle_id, "key": "not-a-real-key"},
+            )
+            self.assertTrue(warmup.get("isError"), text_content(warmup))
+            overlay = json.loads(text_content(secondary.call_tool("health_report")))["overlay"]
+            first_agent_pid = overlay["agent_pid"]
+            ready_path = Path(overlay["ready_file"])
+            channel_directory = ready_path.parent
+
+            os.kill(first_agent_pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    ready = json.loads(ready_path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    time.sleep(0.02)
+                    continue
+                candidate = ready.get("agent_pid")
+                if isinstance(candidate, int) and candidate != first_agent_pid:
+                    try:
+                        os.kill(candidate, 0)
+                    except ProcessLookupError:
+                        time.sleep(0.02)
+                        continue
+                    replacement_pid = candidate
+                    break
+                time.sleep(0.02)
+            self.assertIsNotNone(replacement_pid, "overlay was not autonomously relaunched")
+
+            secondary.process.kill()
+            secondary.process.wait(timeout=3)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and channel_directory.exists():
+                time.sleep(0.05)
+            self.assertFalse(channel_directory.exists(), channel_directory)
+            assert replacement_pid is not None
+            with self.assertRaises(ProcessLookupError):
+                os.kill(replacement_pid, 0)
+        finally:
+            secondary.close()
+            if channel_directory is not None:
+                shutil.rmtree(channel_directory, ignore_errors=True)
+
+    def test_unused_server_sigkill_does_not_leak_overlay_channel(self) -> None:
+        secondary = MCPClient(SERVER_BINARY)
+        try:
+            report = json.loads(text_content(secondary.call_tool("health_report")))
+            channel_directory = Path(report["overlay"]["state_file"]).parent
+            self.assertEqual("not_requested", report["overlay"]["status"])
+            secondary.process.kill()
+            secondary.process.wait(timeout=3)
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline and channel_directory.exists():
+                time.sleep(0.05)
+            self.assertFalse(channel_directory.exists(), channel_directory)
+        finally:
+            secondary.close()
+
+    def test_scroll_targets_snapshot_without_moving_hardware_pointer(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(
+            r"bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+            listing,
+        )
+        self.assertIsNotNone(match, listing)
+        assert match is not None
+        x, y, width, height = map(int, match.groups())
+        expected_quartz = (x + width / 2, y + height / 2)
+
+        report = json.loads(text_content(self.client.call_tool("health_report")))
+        state_path = Path(report["overlay"]["state_file"])
+        pointer_before = hardware_pointer_location()
+        result = self.client.call_tool(
+            "scroll",
+            {
+                "app": self.fixture_bundle_id,
+                "direction": "down",
+                "pages": 0.25,
+            },
+        )
+        pointer_after = hardware_pointer_location()
+        self.assertFalse(result.get("isError"), text_content(result))
+        self.assertLessEqual(abs(pointer_after[0] - pointer_before[0]), 1.0)
+        self.assertLessEqual(abs(pointer_after[1] - pointer_before[1]), 1.0)
+
+        received = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Background Scroll Received",
+                "condition": "exists",
+                "timeout_ms": 1000,
+            },
+        )
+        self.assertFalse(received.get("isError"), text_content(received))
+
+        overlay_state = json.loads(state_path.read_text())
+        self.assertAlmostEqual(expected_quartz[0], overlay_state["cursor"][0], delta=2)
+        self.assertAlmostEqual(expected_quartz[1], overlay_state["cursor"][1], delta=2)
+
+    def test_drag_targets_snapshot_without_moving_hardware_pointer(self) -> None:
+        fixture_pid = self.launch_fixture()
+        self.assert_fixture_state_available(fixture_pid)
+        state = self.client.call_tool("get_app_state", {"app": self.fixture_bundle_id})
+        image_width, image_height = png_dimensions(state)
+        start_pixel = (image_width * 0.30, image_height * 0.65)
+        end_pixel = (image_width * 0.70, image_height * 0.65)
+
+        listing = text_content(
+            self.client.call_tool("list_windows", {"app": self.fixture_bundle_id})
+        )
+        match = re.search(
+            r"bounds=\(x:(-?\d+), y:(-?\d+), width:(\d+), height:(\d+)\)",
+            listing,
+        )
+        self.assertIsNotNone(match, listing)
+        assert match is not None
+        x, y, width, _ = map(int, match.groups())
+        pixel_scale = image_width / width
+        expected_end = (
+            x + end_pixel[0] / pixel_scale,
+            y + end_pixel[1] / pixel_scale,
+        )
+
+        report = json.loads(text_content(self.client.call_tool("health_report")))
+        state_path = Path(report["overlay"]["state_file"])
+        pointer_before = hardware_pointer_location()
+        result = self.client.call_tool(
+            "drag",
+            {
+                "app": self.fixture_bundle_id,
+                "from_x": start_pixel[0],
+                "from_y": start_pixel[1],
+                "to_x": end_pixel[0],
+                "to_y": end_pixel[1],
+            },
+        )
+        pointer_after = hardware_pointer_location()
+        self.assertFalse(result.get("isError"), text_content(result))
+        self.assertLessEqual(abs(pointer_after[0] - pointer_before[0]), 1.0)
+        self.assertLessEqual(abs(pointer_after[1] - pointer_before[1]), 1.0)
+
+        received = self.client.call_tool(
+            "verify_state",
+            {
+                "app": self.fixture_bundle_id,
+                "text": "Background Drag Received",
+                "condition": "exists",
+                "timeout_ms": 1000,
+            },
+        )
+        self.assertFalse(received.get("isError"), text_content(received))
+
+        overlay_state = json.loads(state_path.read_text())
+        self.assertAlmostEqual(expected_end[0], overlay_state["cursor"][0], delta=2)
+        self.assertAlmostEqual(expected_end[1], overlay_state["cursor"][1], delta=2)
 
     def test_same_server_resolves_app_launch_and_pid_replacement(self) -> None:
         before = text_content(self.client.call_tool("list_apps"))

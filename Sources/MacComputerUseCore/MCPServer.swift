@@ -36,14 +36,42 @@ func runStdinLoop() -> Never {
 }
 
 func macComputerUseVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.5.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.6.0"
 }
 
 public func runMacComputerUse() -> Never {
     if CommandLine.arguments.contains("overlay") {
-        runOverlayAgent(capture: CommandLine.arguments.contains("capture"))
+        func argumentValue(after flag: String) -> String? {
+            guard let index = CommandLine.arguments.firstIndex(of: flag),
+                  CommandLine.arguments.indices.contains(index + 1) else { return nil }
+            return CommandLine.arguments[index + 1]
+        }
+        guard let statePath = argumentValue(after: "--state-path"),
+              let cancelPath = argumentValue(after: "--cancel-path"),
+              let readyPath = argumentValue(after: "--ready-path"),
+              let channelID = argumentValue(after: "--channel-id"),
+              let ownerValue = argumentValue(after: "--owner-pid"),
+              let ownerPID = Int32(ownerValue), ownerPID > 0,
+              let channelUUID = UUID(uuidString: channelID) else {
+            log("overlay agent requires valid channel paths, channel id, and owner pid")
+            exit(2)
+        }
+        let expected = OverlayIPCPaths(ownerPID: ownerPID, nonce: channelUUID)
+        guard expected.stateURL.standardizedFileURL.path == URL(fileURLWithPath: statePath).standardizedFileURL.path,
+              expected.cancelURL.standardizedFileURL.path == URL(fileURLWithPath: cancelPath).standardizedFileURL.path,
+              expected.readyURL.standardizedFileURL.path == URL(fileURLWithPath: readyPath).standardizedFileURL.path else {
+            log("overlay agent rejected mismatched channel paths")
+            exit(2)
+        }
+        runOverlayAgent(
+            capture: CommandLine.arguments.contains("capture"),
+            statePath: statePath,
+            cancelPath: cancelPath,
+            readyPath: readyPath,
+            channelID: expected.channelID,
+            ownerPID: ownerPID
+        )
     }
-    _ = CGRequestScreenCaptureAccess()
     log("mac-computer-use \(macComputerUseVersion()) (mcp) starting. AX trusted: \(AXIsProcessTrusted()), ScreenRecording: \(CGPreflightScreenCaptureAccess())")
     OverlayController.shared.install()
     runStdinLoop()

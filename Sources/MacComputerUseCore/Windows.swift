@@ -40,3 +40,55 @@ func preferredWindow(forPid pid: pid_t, titleHint: String?) -> WindowCandidate? 
     if frontmost.id != hinted.id, frontmost.bounds.intersects(hinted.bounds) { return frontmost }
     return hinted
 }
+
+func exactAccessibilityWindowIdentityAvailable() -> Bool {
+    AccessibilityWindowIdentity.shared.available
+}
+
+private final class AccessibilityWindowIdentity: @unchecked Sendable {
+    static let shared = AccessibilityWindowIdentity()
+    private typealias Resolver = @convention(c) (
+        AXUIElement,
+        UnsafeMutablePointer<CGWindowID>
+    ) -> AXError
+
+    private let resolver: Resolver?
+    var available: Bool { resolver != nil }
+
+    private init() {
+        let candidates = [
+            "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
+        ]
+        var loaded: Resolver?
+        for path in candidates {
+            guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL),
+                  let symbol = dlsym(handle, "_AXUIElementGetWindow") else {
+                continue
+            }
+            loaded = unsafeBitCast(symbol, to: Resolver.self)
+            break
+        }
+        resolver = loaded
+    }
+
+    func windowID(for element: AXUIElement) -> CGWindowID? {
+        guard let resolver else { return nil }
+        var identifier: CGWindowID = 0
+        guard resolver(element, &identifier) == .success, identifier > 0 else { return nil }
+        return identifier
+    }
+}
+
+func canAuthorizeExactWindow(identityResolverAvailable: Bool) -> Bool {
+    identityResolverAvailable
+}
+
+func accessibilityWindow(matching candidate: WindowCandidate, in app: AXUIElement) -> AXUIElement? {
+    let windows = axArr(app, "AXWindows")
+    guard !windows.isEmpty else { return nil }
+
+    let identity = AccessibilityWindowIdentity.shared
+    guard canAuthorizeExactWindow(identityResolverAvailable: identity.available) else { return nil }
+    return windows.first { identity.windowID(for: $0) == candidate.id }
+}

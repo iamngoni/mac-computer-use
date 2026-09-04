@@ -35,6 +35,27 @@ func blockingRun<T>(timeout: TimeInterval, _ op: @escaping @Sendable () async th
 }
 
 // MARK: - JSON / stdout
+func strictJSONDouble(_ value: Any?) -> Double? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID() else {
+        return nil
+    }
+    return number.doubleValue
+}
+
+func strictJSONInteger(_ value: Any?) -> Int? {
+    guard let value = strictJSONDouble(value), value.isFinite else { return nil }
+    return Int(exactly: value)
+}
+
+func strictJSONBoolean(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) == CFBooleanGetTypeID() else {
+        return nil
+    }
+    return number.boolValue
+}
+
 func toJSON(_ obj: Any) -> Data { (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8) }
 let stdoutHandle = FileHandle.standardOutput
 let stdoutLock = NSLock()
