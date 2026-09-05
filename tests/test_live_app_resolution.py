@@ -165,7 +165,12 @@ def fixture_info_plist(bundle_id: str) -> str:
 
 
 class MCPClient:
-    def __init__(self, binary: Path, response_timeout: float = 15) -> None:
+    def __init__(
+        self,
+        binary: Path,
+        response_timeout: float = 15,
+        environment: dict[str, str] | None = None,
+    ) -> None:
         self.response_timeout = response_timeout
         self.process = subprocess.Popen(
             [str(binary)],
@@ -174,6 +179,7 @@ class MCPClient:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            env=environment,
         )
         self._next_id = 1
         self.initialize_response: dict = {}

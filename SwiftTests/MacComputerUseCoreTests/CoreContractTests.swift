@@ -3,6 +3,128 @@ import XCTest
 @testable import MacComputerUseCore
 
 final class CoreContractTests: XCTestCase {
+    func testLaunchModePreservesLegacyStdioAndSupportsExplicitModes() {
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use"], standardInputIsPipe: true),
+            .mcp
+        )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use"], standardInputIsPipe: false),
+            .manager
+        )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "mcp"], standardInputIsPipe: false),
+            .mcp
+        )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "overlay"], standardInputIsPipe: false),
+            .overlay
+        )
+    }
+
+    func testUpdateGateWaitsForSessionsAndBlocksNewOnesThroughInstallerHandoff() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "maccu-update-gate-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var session: MCPProcessSessionLease? = MCPProcessSessionLease.acquire(in: root)
+        XCTAssertNotNil(session)
+        XCTAssertNil(ExclusiveUpdateLease.acquire(version: "0.8.0", in: root))
+
+        session = nil
+        var update: ExclusiveUpdateLease? = ExclusiveUpdateLease.acquire(
+            version: "0.8.0",
+            keepsMarkerAfterRelease: true,
+            in: root
+        )
+        XCTAssertNotNil(update)
+        XCTAssertNil(MCPProcessSessionLease.acquire(in: root))
+
+        update = nil
+        XCTAssertNil(MCPProcessSessionLease.acquire(in: root))
+        ExclusiveUpdateLease.recoverStaleMarker(in: root)
+        XCTAssertNotNil(MCPProcessSessionLease.acquire(in: root))
+    }
+
+    func testClientRegistrationUsesExplicitMCPModeAndNeverOverwritesSilently() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "maccu-registration-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let codex = root.appendingPathComponent("codex")
+        XCTAssertTrue(FileManager.default.createFile(atPath: codex.path, contents: Data()))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: codex.path)
+        let server = URL(fileURLWithPath: "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use")
+
+        let service = MCPClientRegistrationService(
+            serverExecutableURL: server,
+            environment: ["PATH": root.path],
+            homeDirectory: root,
+            runProcess: { _, _ in
+                ProcessResult(
+                    status: 0,
+                    output: #"{"transport":{"command":"/tmp/old/mac-computer-use","args":[]}}"#,
+                    errorOutput: ""
+                )
+            }
+        )
+
+        XCTAssertEqual(
+            service.installationArguments(for: .codex),
+            ["mcp", "add", "mac-computer-use", "--", server.path, "mcp"]
+        )
+        XCTAssertEqual(
+            service.installationArguments(for: .claude),
+            ["mcp", "add", "--scope", "user", "mac-computer-use", "--", server.path, "mcp"]
+        )
+        guard case .failure(let error) = service.install(.codex, replaceExisting: false) else {
+            return XCTFail("A different registration must require an explicit replace action.")
+        }
+        XCTAssertTrue(error.message.contains("different"))
+
+        let absentService = MCPClientRegistrationService(
+            serverExecutableURL: server,
+            environment: ["PATH": root.path],
+            homeDirectory: root,
+            runProcess: { _, _ in
+                ProcessResult(
+                    status: 1,
+                    output: "",
+                    errorOutput: "Error: No MCP server named 'mac-computer-use' found."
+                )
+            }
+        )
+        XCTAssertEqual(absentService.inspect(.codex), .absent)
+
+        let installableService = MCPClientRegistrationService(
+            serverExecutableURL: server,
+            environment: ["PATH": root.path],
+            homeDirectory: root,
+            runProcess: { _, arguments in
+                if arguments.prefix(2) == ["mcp", "get"] {
+                    return ProcessResult(
+                        status: 1,
+                        output: "",
+                        errorOutput: "Error: No MCP server named 'mac-computer-use' found."
+                    )
+                }
+                return ProcessResult(status: 0, output: "", errorOutput: "")
+            }
+        )
+        guard case .success = installableService.install(.codex, replaceExisting: false) else {
+            return XCTFail("An absent registration should install without replacement approval.")
+        }
+        XCTAssertEqual(
+            installableService.copyableInstallationCommand(for: .codex),
+            "codex mcp add mac-computer-use -- /Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use mcp"
+        )
+    }
+
     func testToolSchemasPreserveExistingContract() {
         let names = toolSchemas().compactMap { $0["name"] as? String }
 

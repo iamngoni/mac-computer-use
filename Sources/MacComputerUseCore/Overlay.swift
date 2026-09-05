@@ -71,14 +71,14 @@ func menuBarPresentation(
     )
 }
 
-struct AutomationCursorAssets {
-    static let canvasSize = CGSize(width: 36, height: 36)
-    static let pointerHotspot = CGPoint(x: 12, y: 7)
+public struct AutomationCursorAssets {
+    public static let canvasSize = CGSize(width: 36, height: 36)
+    public static let pointerHotspot = CGPoint(x: 12, y: 7)
 
-    let pointer: NSImage
-    let pulse: NSImage
+    public let pointer: NSImage
+    public let pulse: NSImage
 
-    static func load(resourceRoot: URL? = Bundle.main.resourceURL) -> AutomationCursorAssets? {
+    public static func load(resourceRoot: URL? = Bundle.main.resourceURL) -> AutomationCursorAssets? {
         guard let directory = resourceRoot?.appendingPathComponent(
             "VirtualCursor",
             isDirectory: true
@@ -165,13 +165,41 @@ func makeAutomationStatusImage(
     return image
 }
 
+public struct AutomationStatusBarActions {
+    public let version: String
+    public let setup: () -> Void
+    public let showPermissions: () -> Void
+    public let checkForUpdates: () -> Void
+    public let canCheckForUpdates: () -> Bool
+    public let quit: () -> Void
+
+    public init(
+        version: String,
+        setup: @escaping () -> Void,
+        showPermissions: @escaping () -> Void,
+        checkForUpdates: @escaping () -> Void,
+        canCheckForUpdates: @escaping () -> Bool,
+        quit: @escaping () -> Void
+    ) {
+        self.version = version
+        self.setup = setup
+        self.showPermissions = showPermissions
+        self.checkForUpdates = checkForUpdates
+        self.canCheckForUpdates = canCheckForUpdates
+        self.quit = quit
+    }
+}
+
+@MainActor
 final class AutomationStatusBarController {
     private let cursorImage: NSImage
+    private let actions: AutomationStatusBarActions?
     private let statusItem: NSStatusItem
     private var lastSignature = ""
 
-    init(cursorImage: NSImage) {
+    init(cursorImage: NSImage, actions: AutomationStatusBarActions?) {
         self.cursorImage = cursorImage
+        self.actions = actions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         update(currentApp: nil, controlledApps: [])
     }
@@ -191,6 +219,7 @@ final class AutomationStatusBarController {
         let signature = ([
             presentation.accessibilityLabel,
             presentation.statusTitle,
+            actions?.canCheckForUpdates() == true ? "updates-enabled" : "updates-disabled",
         ] + presentation.controlledAppTitles).joined(separator: "\u{1f}")
         guard signature != lastSignature else { return }
         lastSignature = signature
@@ -205,7 +234,9 @@ final class AutomationStatusBarController {
 
         let menu = NSMenu(title: "Mac Computer Use")
         let status = NSMenuItem(
-            title: presentation.statusTitle,
+            title: presentation.controlledAppTitles.isEmpty && actions != nil
+                ? "Ready"
+                : presentation.statusTitle,
             action: nil,
             keyEquivalent: ""
         )
@@ -239,19 +270,68 @@ final class AutomationStatusBarController {
                 menu.addItem(item)
             }
         }
+        if let actions {
+            menu.addItem(.separator())
+            let setup = NSMenuItem(
+                title: "Setup Mac Computer Use…",
+                action: #selector(openSetup),
+                keyEquivalent: ""
+            )
+            setup.target = self
+            menu.addItem(setup)
+
+            let permissions = NSMenuItem(
+                title: "Permissions…",
+                action: #selector(openPermissions),
+                keyEquivalent: ""
+            )
+            permissions.target = self
+            menu.addItem(permissions)
+
+            let updates = NSMenuItem(
+                title: "Check for Updates…",
+                action: #selector(checkForUpdates),
+                keyEquivalent: ""
+            )
+            updates.target = self
+            updates.isEnabled = actions.canCheckForUpdates()
+            menu.addItem(updates)
+
+            menu.addItem(.separator())
+            let version = NSMenuItem(
+                title: "Version \(actions.version)",
+                action: nil,
+                keyEquivalent: ""
+            )
+            version.isEnabled = false
+            menu.addItem(version)
+
+            let quit = NSMenuItem(
+                title: "Quit Mac Computer Use",
+                action: #selector(quitManager),
+                keyEquivalent: "q"
+            )
+            quit.target = self
+            menu.addItem(quit)
+        }
         statusItem.menu = menu
     }
+
+    @objc private func openSetup() { actions?.setup() }
+    @objc private func openPermissions() { actions?.showPermissions() }
+    @objc private func checkForUpdates() { actions?.checkForUpdates() }
+    @objc private func quitManager() { actions?.quit() }
 }
 
 private let overlayIPCDirectoryPrefix = "mac-computer-use-overlay-"
 
-func overlayProcessIsAlive(_ pid: pid_t) -> Bool {
+public func overlayProcessIsAlive(_ pid: pid_t) -> Bool {
     guard pid > 0 else { return false }
     errno = 0
     return kill(pid, 0) == 0 || errno == EPERM
 }
 
-func activeOverlayControlledApps(
+public func activeOverlayControlledApps(
     in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
     processIsAlive: (pid_t) -> Bool = overlayProcessIsAlive
 ) -> [String] {
@@ -314,8 +394,10 @@ final class ExclusiveFileLease {
     }
 }
 
-final class AutomationStatusBarCoordinator {
+@MainActor
+public final class AutomationStatusBarCoordinator {
     private let cursorImage: NSImage
+    private let actions: AutomationStatusBarActions?
     private let lockURL: URL
     private let temporaryDirectory: URL
     private var lease: ExclusiveFileLease?
@@ -324,11 +406,13 @@ final class AutomationStatusBarCoordinator {
     private var nextApplicationRefresh: CFTimeInterval = 0
     private var aggregatedApplications: [String] = []
 
-    init(
+    public init(
         cursorImage: NSImage,
+        actions: AutomationStatusBarActions? = nil,
         temporaryDirectory: URL = FileManager.default.temporaryDirectory
     ) {
         self.cursorImage = cursorImage
+        self.actions = actions
         self.temporaryDirectory = temporaryDirectory
         lockURL = temporaryDirectory.appendingPathComponent("mac-computer-use-menubar.lock")
         acquireLeaseIfAvailable(now: CACurrentMediaTime())
@@ -339,9 +423,9 @@ final class AutomationStatusBarCoordinator {
         lease = nil
     }
 
-    var isActive: Bool { statusBarController?.isActive == true }
+    public var isActive: Bool { statusBarController?.isActive == true }
 
-    func update(currentApp: String?, controlledApps: [String]) {
+    public func update(currentApp: String?, controlledApps: [String]) {
         let now = CACurrentMediaTime()
         acquireLeaseIfAvailable(now: now)
         guard let statusBarController else { return }
@@ -366,7 +450,8 @@ final class AutomationStatusBarCoordinator {
         guard let lease = ExclusiveFileLease.acquire(at: lockURL) else { return }
         self.lease = lease
         statusBarController = AutomationStatusBarController(
-            cursorImage: cursorImage
+            cursorImage: cursorImage,
+            actions: actions
         )
         nextApplicationRefresh = 0
     }
@@ -766,7 +851,7 @@ final class OverlayController {
             "ready_file": paths.readyURL.path,
             "ready_file_present": FileManager.default.fileExists(atPath: paths.readyURL.path),
             "agent_pid": agentPid ?? NSNull(),
-            "menu_bar_item_active": ready?["menu_bar_item"] as? Bool ?? false,
+            "menu_bar_item_active": managerProcessIsRunning(),
             "current_app": state?["current_app"] ?? NSNull(),
             "controlled_apps": state?["controlled_apps"] as? [String] ?? [],
             "cursor_initialized": ((state?["cursor"] as? [Double])?.count == 2),
@@ -894,6 +979,7 @@ final class OverlayController {
         appName: String?,
         targetQuartz: CGRect?
     ) -> pid_t? {
+        ensureManagerIsRunning()
         guard let agentPID = ensureAgent() else { return nil }
         let resolvedApp = appName ?? appPID.flatMap {
             NSRunningApplication(processIdentifier: $0)?.localizedName
@@ -1019,9 +1105,6 @@ func runOverlayAgent(
         log("automation cursor panel has an invalid content view")
         exit(2)
     }
-    let statusBarCoordinator = AutomationStatusBarCoordinator(
-        cursorImage: cursorAssets.pointer
-    )
     func toLocalR(_ r: CGRect) -> CGRect { CGRect(x: r.minX - window.frame.minX, y: r.minY - window.frame.minY, width: r.width, height: r.height) }
 
     let keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { ev in
@@ -1064,12 +1147,6 @@ func runOverlayAgent(
         let controlling = st["controlling"] as? Bool ?? false
         let linger = st["lingerUntil"] as? Double ?? 0
         let captureHide = st["captureHide"] as? Bool ?? false
-        let currentApp = st["current_app"] as? String
-        let controlledApps = st["controlled_apps"] as? [String] ?? []
-        statusBarCoordinator.update(
-            currentApp: currentApp,
-            controlledApps: controlledApps
-        )
         view.cancelling = st["cancelling"] as? Bool ?? false
         view.status = st["status"] as? String ?? ""
         var cursorPoint: CGPoint?
@@ -1152,7 +1229,7 @@ func runOverlayAgent(
         "owner_pid": Int(ownerPID),
         "agent_pid": Int(getpid()),
         "channel_id": channelID,
-        "menu_bar_item": statusBarCoordinator.isActive,
+        "menu_bar_item": managerProcessIsRunning(),
     ]
     do {
         let data = try JSONSerialization.data(withJSONObject: ready)

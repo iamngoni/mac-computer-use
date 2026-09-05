@@ -1,0 +1,14 @@
+cask "mac-computer-use" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/iamngoni/mac-computer-use/releases/download/v#{version}/MacComputerUse-#{version}.dmg"
+  name "Mac Computer Use"
+  desc "Native macOS computer-use MCP server"
+  homepage "https://github.com/iamngoni/mac-computer-use"
+
+  auto_updates true
+  depends_on macos: ">= :ventura"
+
+  app "MacComputerUse.app"
+end

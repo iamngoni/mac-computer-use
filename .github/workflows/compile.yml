@@ -42,6 +42,9 @@ jobs:
       - name: Run Swift tests
         run: swift test -Xswiftc -warnings-as-errors
 
+      - name: Validate packaging scripts
+        run: bash -n build.sh scripts/package_release.sh
+
       - name: Build signed app bundle
         run: ./build.sh
 
@@ -54,7 +57,15 @@ jobs:
         run: |
           plutil -lint MacComputerUse.app/Contents/Info.plist
           codesign --verify --deep --strict MacComputerUse.app
+          test -d MacComputerUse.app/Contents/Frameworks/Sparkle.framework
+          test -s MacComputerUse.app/Contents/Resources/Licenses/Sparkle-LICENSE.txt
+          test "$(defaults read "$PWD/MacComputerUse.app/Contents/Info" CFBundleIdentifier)" = "com.modestnerd.mac-computer-use"
+          test "$(defaults read "$PWD/MacComputerUse.app/Contents/Info" CFBundleExecutable)" = "mac-computer-use"
+          test "$(defaults read "$PWD/MacComputerUse.app/Contents/Info" CFBundleShortVersionString)" = "$(tr -d '[:space:]' < VERSION)"
           test "$(defaults read "$PWD/MacComputerUse.app/Contents/Info" LSMinimumSystemVersion)" = "13.0"
+          ! defaults read "$PWD/MacComputerUse.app/Contents/Info" SUFeedURL >/dev/null 2>&1
+          otool -L MacComputerUse.app/Contents/MacOS/mac-computer-use | grep -q '@rpath/Sparkle.framework'
+          otool -l MacComputerUse.app/Contents/MacOS/mac-computer-use | grep -A 2 LC_RPATH | grep -q '@executable_path/../Frameworks'
           otool -l MacComputerUse.app/Contents/MacOS/mac-computer-use | \
             grep -A 4 'LC_BUILD_VERSION' | grep -q 'minos 13.0'
 

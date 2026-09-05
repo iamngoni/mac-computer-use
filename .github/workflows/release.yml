@@ -1,0 +1,85 @@
+name: Signed release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+      CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      SIGNING_KEYCHAIN: ${{ runner.temp }}/maccu-signing.keychain-db
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          clean: true
+          persist-credentials: false
+
+      - name: Validate tag and source
+        run: |
+          test "$RELEASE_TAG" = "v$(tr -d '[:space:]' < VERSION)"
+          git tag --points-at HEAD | grep -Fxq "$RELEASE_TAG"
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$SIGNING_KEYCHAIN"
+          certificate="$RUNNER_TEMP/maccu-signing.p12"
+          security delete-keychain "$keychain" 2>/dev/null || true
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$RUNNER_TEMP" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$RUNNER_TEMP" "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" "$keychain"
+          rm "$certificate"
+
+      - name: Test source
+        run: swift test -Xswiftc -warnings-as-errors
+
+      - name: Build, sign, notarize, and package
+        run: ./scripts/package_release.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/MacComputerUse-*.dmg \
+            dist/MacComputerUse-*.zip \
+            dist/appcast.xml \
+            dist/mac-computer-use.rb \
+            --verify-tag \
+            --generate-notes \
+            --title "Mac Computer Use $(tr -d '[:space:]' < VERSION)"
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$SIGNING_KEYCHAIN" 2>/dev/null || true
