@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import struct
 import time
@@ -40,7 +41,10 @@ class MCPContractTests(unittest.TestCase):
     def setUp(self) -> None:
         if not SERVER_BINARY.exists():
             self.fail(f"Build the bundle first: missing {SERVER_BINARY}")
-        self.client = MCPClient(SERVER_BINARY)
+        environment = os.environ.copy()
+        environment["MACCU_DISABLE_MANAGER"] = "1"
+        environment["MACCU_DISABLE_UPDATES"] = "1"
+        self.client = MCPClient(SERVER_BINARY, environment=environment)
 
     def tearDown(self) -> None:
         self.client.close()
@@ -48,7 +52,7 @@ class MCPContractTests(unittest.TestCase):
     def test_server_metadata_and_tools(self) -> None:
         initialized = self.client.initialize_response["result"]
         self.assertEqual("mac-computer-use", initialized["serverInfo"]["name"])
-        self.assertEqual("0.6.0", initialized["serverInfo"]["version"])
+        self.assertEqual("0.7.0", initialized["serverInfo"]["version"])
 
         response = self.client.request("tools/list", {})
         names = [tool["name"] for tool in response["result"]["tools"]]
@@ -56,10 +60,12 @@ class MCPContractTests(unittest.TestCase):
 
     def test_unbundled_binary_reports_current_version(self) -> None:
         self.assertTrue(UNBUNDLED_BINARY.is_file(), UNBUNDLED_BINARY)
-        client = MCPClient(UNBUNDLED_BINARY)
+        environment = os.environ.copy()
+        environment["MACCU_DISABLE_MANAGER"] = "1"
+        client = MCPClient(UNBUNDLED_BINARY, environment=environment)
         try:
             initialized = client.initialize_response["result"]
-            self.assertEqual("0.6.0", initialized["serverInfo"]["version"])
+            self.assertEqual("development", initialized["serverInfo"]["version"])
         finally:
             client.close()
 
@@ -128,12 +134,12 @@ class MCPContractTests(unittest.TestCase):
         self.assertEqual(
             "com.modestnerd.mac-computer-use", report["bundle"]["identifier"]
         )
-        self.assertEqual("0.6.0", report["bundle"]["version"])
+        self.assertEqual("0.7.0", report["bundle"]["version"])
         self.assertIsInstance(report["overlay"]["launch_requested"], bool)
         self.assertIsInstance(report["overlay"]["state_file_present"], bool)
         self.assertEqual("not_requested", report["overlay"]["status"])
         self.assertIsNone(report["overlay"]["agent_pid"])
-        self.assertFalse(report["overlay"]["menu_bar_item_active"])
+        self.assertIsInstance(report["overlay"]["menu_bar_item_active"], bool)
         self.assertIsNone(report["overlay"]["current_app"])
         self.assertEqual([], report["overlay"]["controlled_apps"])
         self.assertFalse(report["overlay"]["cursor_initialized"])
@@ -156,7 +162,9 @@ class MCPContractTests(unittest.TestCase):
         first_path = Path(first_report["overlay"]["state_file"])
         self.assertFalse(first_path.parent.exists(), first_path.parent)
 
-        second = MCPClient(SERVER_BINARY)
+        environment = os.environ.copy()
+        environment["MACCU_DISABLE_MANAGER"] = "1"
+        second = MCPClient(SERVER_BINARY, environment=environment)
         second_report = json.loads(text_content(second.call_tool("health_report")))
         second_path = Path(second_report["overlay"]["state_file"])
         try:

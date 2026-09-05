@@ -2,7 +2,7 @@
 
 A native macOS computer-use server for AI agents, exposed over the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). It lets an MCP client inspect and control macOS apps through Accessibility, Core Graphics, ScreenCaptureKit, and targeted WindowServer events.
 
-It is a single, self-contained Swift binary packaged as a signed `.app` bundle. No Python, no Node, no external dependencies.
+It is a native Swift app with no Python, Node, or runtime package-manager dependency. Signed releases bundle the Sparkle updater inside the app.
 
 > Built as an open alternative to proprietary, login-gated computer-use engines. It has no auth wall and fails closed when app, window, or snapshot identity is missing.
 
@@ -11,7 +11,9 @@ It is a single, self-contained Swift binary packaged as a signed `.app` bundle. 
 - **Background-capable control.** Clicks prefer the Accessibility `AXPress` action. Coordinate clicks, scrolling, and dragging target a validated app and window without moving the hardware pointer.
 - **Background clicks for web content.** Chromium, Electron, and Catalyst web views can ignore ordinary process-posted events. `click_method: "sky_click"` uses a fail-closed SkyLight path against the exact snapshot window without activating the app.
 - **Persistent automation cursor.** The overlay loads the supplied scale-aware pointer and cyan pulse layers from `Assets/VirtualCursor`, aligns their documented hotspot to explicit automation coordinates, and animates the pulse for breathing and click feedback. A small, non-activating, input-transparent panel remains at the last automation coordinate for the MCP session without reading or moving the hardware pointer. Runtime bundles include only the 1×/2×/3× exports, not the master generation files.
-- **Visible menu-bar status.** While the overlay session is active, a compact macOS status item shows the supplied cursor artwork, a blue activity dot, and the current app's icon. Its accessible label and menu name the current or last controlled app, and the menu lists every app controlled during that MCP session.
+- **One menu-bar manager.** A compact status item shows the supplied cursor artwork and blue activity dot. One item aggregates every live MCP session, adds a count when multiple apps are controlled, and reveals their names in its menu.
+- **Native setup.** Opening the app shows permission status, one-click registration for Codex and Claude Code, copyable fallback commands, and a launch-at-login switch.
+- **Safe automatic updates.** Signed releases check and download through Sparkle. Installation waits until every MCP session disconnects, and the update gate blocks new sessions until the replacement app launches.
 - **Exact window identity.** `list_windows` returns WindowServer IDs. Exact window operations use `_AXUIElementGetWindow` when available and reject ambiguous fallback matches.
 - **Works across macOS apps.** Targets browsers, Music, Notes, Finder, Mail, and other native apps without requiring them to be frontmost.
 - **Accessibility-tree perception.** `get_app_state` returns a compact, indexed tree of the interactive elements in an app's window, plus a screenshot. Element indices are stable and used by the action tools, and are scoped to the app that produced them.
@@ -64,21 +66,30 @@ It is a single, self-contained Swift binary packaged as a signed `.app` bundle. 
 A bare stdio subprocess on macOS **cannot host AppKit** (`NSApplication.run()` blocks without LaunchServices registration), so the overlay can't live in the MCP process. The design mirrors the proven client/service split:
 
 ```
-MCP client
-        │  stdio JSON-RPC
-        ▼
-mac-computer-use (MCP process)         ── pure CLI: AX + CGEvent + screencapture
-        │  launches via `open` (LaunchServices)
-        ▼
-mac-computer-use overlay (agent)       ── real NSApplication run loop, draws the overlay
-        ▲   │
-        └───┘  randomized per-server IPC directory with state.json, ready.json, and cancel
+Mac Computer Use.app (manager)         ── setup, one menu item, Sparkle, login item
+        ▲
+        │ launched once through LaunchServices
+        │
+MCP clients ── stdio ── MCP processes ── randomized IPC ── overlay agents
+        │                       │
+        └──────── shared update gate ────────┘
 ```
 
+- The same stable executable dispatches to manager, explicit `mcp`, and internal `overlay` modes. Existing clients that launch it with piped stdin continue to enter MCP mode automatically.
 - The MCP process never foregrounds apps unless you call `open_app`.
 - The overlay agent launches on the first control action. Its virtual cursor remains visible for that MCP session and eases between automation coordinates without moving the hardware pointer.
-- Concurrent overlay agents coordinate one shared menu-bar item. Its count and dropdown aggregate the apps controlled by every live session, and another agent takes over the item if its owner exits.
+- The persistent manager owns the only menu-bar item. Its count and dropdown aggregate apps controlled by every live session.
 - Each MCP process owns an isolated IPC directory, so concurrent clients cannot overwrite or delete each other's overlay state.
+
+## Install
+
+Download the notarized DMG from [GitHub Releases](https://github.com/iamngoni/mac-computer-use/releases), drag `MacComputerUse.app` to Applications, and open it once. The setup window guides the remaining steps:
+
+1. Grant Accessibility and Screen Recording access.
+2. Connect Codex and/or Claude Code. Existing registrations are shown and are replaced only after an explicit click.
+3. Optionally enable launch at login.
+
+After setup, the app lives in the menu bar. Opening it again returns to setup. Each release also includes a ready-to-publish Homebrew cask; see [the release guide](docs/RELEASING.md).
 
 ## Build
 
@@ -88,10 +99,10 @@ Requires the Swift toolchain (Xcode or Command Line Tools).
 ./build.sh
 ```
 
-This builds the Swift package's release executable, installs it in `MacComputerUse.app`,
+This builds the Swift package's release executable, embeds Sparkle and the cursor assets in `MacComputerUse.app`,
 and ad-hoc code-signs the bundle with the stable identifier
 `com.modestnerd.mac-computer-use` so macOS permission grants survive in-place rebuilds.
-The bundle reports version `0.6.0`. The executable and `Info.plist` both target macOS 13 or later.
+The version comes from `VERSION`; the executable and `Info.plist` both target macOS 13 or later. Local builds intentionally omit the Sparkle feed and public key, so they never contact the release channel.
 
 ## Test
 
@@ -114,6 +125,7 @@ Both workflows use self-hosted macOS runners only:
 - `GUI integration` is manual and targets
   `[self-hosted, macOS, ARM64, maccu-tcc]`. Register that label only on a logged-in
   runner where the fixed-path app has Accessibility and Screen Recording permissions.
+- `Signed release` runs only for a version-matching tag (or an existing tag selected manually). It builds a universal app, signs with Developer ID, notarizes and staples the app and DMG, signs the Sparkle archive/appcast, and publishes the DMG, ZIP, appcast, and Homebrew cask.
 
 Fork pull-request code does not run on the self-hosted runner. Neither workflow has write permissions or receives repository credentials from checkout. Do not add a GitHub-hosted fallback when no runner is registered.
 
@@ -129,14 +141,21 @@ Grant Accessibility and Screen Recording to the fixed installed bundle path befo
 
 ## Use with Claude Code
 
-Register the bundle's executable as an MCP server:
+The setup window can register the installed executable. The equivalent manual command is:
 
 ```bash
-claude mcp add mac-computer-use --scope user -- \
-  "$HOME/.local/share/mac-computer-use/MacComputerUse.app/Contents/MacOS/mac-computer-use"
+claude mcp add --scope user mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
 ```
 
 Restart Claude Code; the tools attach as `mcp__mac-computer-use__*`.
+
+For Codex:
+
+```bash
+codex mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
+```
 
 > Note: macOS reserves the server name `computer-use` for the built-in engine, so register this under a distinct name (e.g. `mac-computer-use`).
 
@@ -153,13 +172,16 @@ open_app(app: "Music"); click(app: "Music", element_index: 7)  # play
 
 ```
 Package.swift                       # Swift package definition
-Sources/MacComputerUse/             # three-line executable entry point
+Sources/MacComputerUse/             # executable dispatcher, manager, setup, and updater
 Sources/MacComputerUseCore/         # MCP, AX, capture, input, overlay, and tool modules
 SwiftTests/MacComputerUseCoreTests/ # permission-free Swift contract tests
 tests/test_mcp_contract.py          # permission-free executable protocol test
 tests/test_live_app_resolution.py   # permissioned app lifecycle regression
-.github/workflows/                  # self-hosted compile and GUI workflows
-build.sh                            # package + sign into MacComputerUse.app
+.github/workflows/                  # compile, GUI, and signed-release workflows
+Packaging/Casks/                    # rendered into each release's Homebrew cask
+scripts/package_release.sh          # notarize and assemble release artifacts
+build.sh                            # embed dependencies and sign MacComputerUse.app
+VERSION                             # single source of app/release version
 THIRD_PARTY_NOTICES.md              # attribution for the SkyLight click recipe
 README.md
 ```

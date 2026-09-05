@@ -35,11 +35,28 @@ func runStdinLoop() -> Never {
     exit(0) // stdin closed -> client gone
 }
 
-func macComputerUseVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.6.0"
+public func macComputerUseVersion(bundle: Bundle = .main) -> String {
+    (bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "development"
 }
 
-public func runMacComputerUse() -> Never {
+private var activeMCPSessionLease: MCPProcessSessionLease?
+
+func ensureManagerIsRunning(bundle: Bundle = .main) {
+    guard ProcessInfo.processInfo.environment["MACCU_DISABLE_MANAGER"] != "1",
+          bundle.bundleURL.pathExtension == "app",
+          !managerProcessIsRunning() else { return }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    process.arguments = [
+        "-g", "-a", bundle.bundleURL.path,
+        "--args", "manager", "--background",
+    ]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try? process.run()
+}
+
+public func runMacComputerUseService() -> Never {
     if CommandLine.arguments.contains("overlay") {
         func argumentValue(after flag: String) -> String? {
             guard let index = CommandLine.arguments.firstIndex(of: flag),
@@ -72,6 +89,12 @@ public func runMacComputerUse() -> Never {
             ownerPID: ownerPID
         )
     }
+    guard let sessionLease = MCPProcessSessionLease.acquire() else {
+        log("mac-computer-use update is installing; retry when the manager finishes")
+        exit(EX_TEMPFAIL)
+    }
+    activeMCPSessionLease = sessionLease
+    ensureManagerIsRunning()
     log("mac-computer-use \(macComputerUseVersion()) (mcp) starting. AX trusted: \(AXIsProcessTrusted()), ScreenRecording: \(CGPreflightScreenCaptureAccess())")
     OverlayController.shared.install()
     runStdinLoop()

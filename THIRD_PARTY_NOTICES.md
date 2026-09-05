@@ -1,5 +1,15 @@
 # Third-Party Notices
 
+## Sparkle
+
+Signed release builds bundle Sparkle 2 for secure application updates.
+
+- Project: https://github.com/sparkle-project/Sparkle
+- License: MIT and bundled third-party notices
+
+The complete upstream license and its external-component notices are packaged at
+`MacComputerUse.app/Contents/Resources/Licenses/Sparkle-LICENSE.txt`.
+
 ## Cua Driver
 
 The `sky_click` event recipe and the private SkyLight bridge in `main.swift` are derived
