@@ -100,7 +100,7 @@ func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
         return toolText("Could not encode the requested window frame.", isError: true)
     }
 
-    return controlled("Moving window", appPID: app.processIdentifier, targetQuartz: candidate.bounds) {
+    return controlled("Moving window", appPID: app.processIdentifier) {
         func matches(_ actual: CGRect, _ expected: CGRect) -> Bool {
             abs(actual.minX - expected.minX) <= 2
                 && abs(actual.minY - expected.minY) <= 2

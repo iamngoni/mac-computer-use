@@ -7,7 +7,7 @@ import ImageIO
 import ScreenCaptureKit
 import Darwin
 
-// MARK: - Overlay (followable cursor, banner, click flashes, target highlight)
+// MARK: - Overlay (followable cursor, banner, click flashes)
 let accent = NSColor(srgbRed: 0.42, green: 0.58, blue: 1.0, alpha: 1.0)
 
 struct OverlayPresentation {
@@ -625,7 +625,6 @@ final class OverlayView: NSView {
     var controlling = false
     var cancelling = false
     var status = ""
-    var target: CGRect? = nil            // window-local
 
 
     override var isFlipped: Bool { false }
@@ -634,17 +633,6 @@ final class OverlayView: NSView {
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.clear(dirty)
-
-        // Target element highlight
-        if let t = target {
-            let path = NSBezierPath(roundedRect: t.insetBy(dx: -3, dy: -3), xRadius: 7, yRadius: 7)
-            accent.withAlphaComponent(0.95).setStroke()
-            path.lineWidth = 2.5
-            ctx.setShadow(offset: .zero, blur: 10, color: accent.withAlphaComponent(0.8).cgColor)
-            path.stroke()
-            ctx.setShadow(offset: .zero, blur: 0, color: nil)
-            accent.withAlphaComponent(0.10).setFill(); path.fill()
-        }
 
         // Status banner (top-center of primary screen)
         if controlling {
@@ -734,7 +722,6 @@ final class OverlayController {
     private var currentAppPID: pid_t?
     private var controlledApps = Set<String>()
     private var cursor: CGPoint? = nil                  // quartz point
-    private var target: CGRect? = nil                 // quartz rect
     private var flashes: [(CGPoint, Double)] = []      // quartz points
     private var lingerUntil: Double = 0
     private var captureHide = false
@@ -960,7 +947,6 @@ final class OverlayController {
             },
             "lingerUntil": lingerUntil, "captureHide": captureHide,
             "cursor": cursor.map { [$0.x, $0.y] } ?? [],
-            "target": target.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? [],
             "flashes": flashes.map { [$0.0.x, $0.0.y, $0.1] },
             "pid": Int(getpid()), "ts": CACurrentMediaTime(),
         ]
@@ -976,8 +962,7 @@ final class OverlayController {
     func begin(
         status: String,
         appPID: pid_t?,
-        appName: String?,
-        targetQuartz: CGRect?
+        appName: String?
     ) -> pid_t? {
         ensureManagerIsRunning()
         guard let agentPID = ensureAgent() else { return nil }
@@ -994,7 +979,6 @@ final class OverlayController {
             currentAppPID = appPID
             controlledApps.insert(resolvedApp)
         }
-        target = targetQuartz
         lingerUntil = 0
         lock.unlock()
         writeState()
@@ -1030,7 +1014,6 @@ func controlled(
     _ status: String,
     appPID: pid_t? = nil,
     appName: String? = nil,
-    targetQuartz: CGRect? = nil,
     _ body: () -> [String: Any]
 ) -> [String: Any] {
     cancelFlag.set(false)
@@ -1038,8 +1021,7 @@ func controlled(
     guard let agentPID = OverlayController.shared.begin(
         status: status,
         appPID: appPID,
-        appName: appName,
-        targetQuartz: targetQuartz
+        appName: appName
     ) else {
         return toolText("Automation overlay agent is unavailable; action was not delivered.", isError: true)
     }
@@ -1105,7 +1087,6 @@ func runOverlayAgent(
         log("automation cursor panel has an invalid content view")
         exit(2)
     }
-    func toLocalR(_ r: CGRect) -> CGRect { CGRect(x: r.minX - window.frame.minX, y: r.minY - window.frame.minY, width: r.width, height: r.height) }
 
     let keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { ev in
         if ev.keyCode == 53 { FileManager.default.createFile(atPath: cancelPath, contents: nil) }
@@ -1164,15 +1145,6 @@ func runOverlayAgent(
         } else {
             cursorMotion.reset()
             displayedCursorPoint = nil
-        }
-        if let t = st["target"] as? [Double], t.count == 4 {
-            view.target = toLocalR(
-                quartzRectToCocoa(
-                    CGRect(x: t[0], y: t[1], width: t[2], height: t[3])
-                )
-            )
-        } else {
-            view.target = nil
         }
         let flashes = st["flashes"] as? [[Double]] ?? []
         if let latestFlash = flashes.last, latestFlash.count == 3 {

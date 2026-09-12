@@ -215,10 +215,10 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     } else {
         idx = nil
     }
-    var pt: CGPoint?; var tgt: CGRect?
+    var pt: CGPoint?
     if let i = idx {
         guard registryElement(i, forPid: pid) != nil else { return staleIndexError(i) }
-        pt = elementCenter(i); tgt = elementFrame(i)
+        pt = elementCenter(i)
     }
     if pt == nil, let x = num(args, "x"), let y = num(args, "y") {
         guard let input = inputPoint(x: x, y: y, context: ctx) else {
@@ -237,7 +237,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
         guard axEligible else {
             return toolText("Element [\(i)] has no AXPress action (or this is not a single left-click). Use click_method app_post or sky_click.", isError: true)
         }
-        return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
+        return controlled("Clicking", appPID: pid) {
             if let c = elementCenter(i) { OverlayController.shared.flashClickQuartz(c) }
             if AXUIElementPerformAction(el, "AXPress" as CFString) == .success { return toolText("Pressed [\(i)] (AX, background).") }
             if method == "accessibility" { return toolText("AXPress failed on [\(i)].", isError: true) }
@@ -268,7 +268,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     // steals focus.
     if method == "sky_click" {
         guard button == .left else { return toolText("sky_click supports the left button only.", isError: true) }
-        return controlled("Clicking (SkyLight)", appPID: pid, targetQuartz: tgt) {
+        return controlled("Clicking (SkyLight)", appPID: pid) {
             OverlayController.shared.moveCursorQuartz(p)
             if let err = skyClick(
                 screenPoint: p,
@@ -280,7 +280,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
         }
     }
 
-    return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
+    return controlled("Clicking", appPID: pid) {
         OverlayController.shared.moveCursorQuartz(p)
         mouseMoveTo(p, pid: pid); usleep(120_000)
         if cancelFlag.value { return toolText("Cancelled (Esc).") }
@@ -341,7 +341,6 @@ func toolScroll(_ args: [String: Any]) -> [String: Any] {
     guard let ctx = authorizedSnapshot(forPid: pid) else {
         return toolText("scroll needs a fresh get_app_state snapshot for this app first.", isError: true)
     }
-    var tgt: CGRect?
     var point = CGPoint(x: ctx.windowBounds.midX, y: ctx.windowBounds.midY)
     if let suppliedIndex = args["element_index"] {
         guard let indexString = suppliedIndex as? String,
@@ -350,9 +349,8 @@ func toolScroll(_ args: [String: Any]) -> [String: Any] {
         }
         guard registryElement(idx, forPid: pid) != nil else { return staleIndexError(idx) }
         if let center = elementCenter(idx) { point = center }
-        tgt = elementFrame(idx)
     }
-    return controlled("Scrolling \(dir)", appPID: pid, targetQuartz: tgt) {
+    return controlled("Scrolling \(dir)", appPID: pid) {
         OverlayController.shared.moveCursorQuartz(point)
         let amt = Int32(pages * 400)
         let delta: (Int32, Int32)
@@ -372,7 +370,7 @@ func toolSetValue(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("set_value needs a valid element_index from this app's last get_app_state.", isError: true) }
     guard let v = args["value"] as? String else { return toolText("set_value needs 'value'.", isError: true) }
-    return controlled("Setting value", appPID: pid, targetQuartz: elementFrame(idx)) {
+    return controlled("Setting value", appPID: pid) {
         AXUIElementSetAttributeValue(el, "AXValue" as CFString, v as CFString) == .success ? toolText("Set value of [\(idx)].") : toolText("Element not settable.", isError: true)
     }
 }
@@ -404,12 +402,12 @@ func toolSecondaryAction(_ args: [String: Any]) -> [String: Any] {
     guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
     guard let action = args["action"] as? String else { return toolText("needs 'action'.", isError: true) }
     let a = action.hasPrefix("AX") ? action : "AX\(action)"
-    return controlled("Action \(a)", appPID: pid, targetQuartz: elementFrame(idx)) { AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true) }
+    return controlled("Action \(a)", appPID: pid) { AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true) }
 }
 func toolSelectText(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
     guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
-    return controlled("Selecting", appPID: pid, targetQuartz: elementFrame(idx)) { _ = AXUIElementPerformAction(el, "AXPress" as CFString); return toolText("Focused [\(idx)].") }
+    return controlled("Selecting", appPID: pid) { _ = AXUIElementPerformAction(el, "AXPress" as CFString); return toolText("Focused [\(idx)].") }
 }
 
 struct ToolDefinition {

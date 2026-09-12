@@ -20,7 +20,7 @@ It is a native Swift app with no Python, Node, or runtime package-manager depend
 - **One interaction coordinate space.** Tree coordinates and `x,y` accepted by `click` and `drag` use screenshot pixels. Window geometry is the explicit exception: `list_windows` reports and `set_window_frame` accepts global screen points.
 - **Bounded screenshots.** Captures go through ScreenCaptureKit as in-memory images and are rescaled to fit a size budget, so a Retina window doesn't dump multiple megabytes of base64 into the model's context.
 - **Reliable browser navigation.** `navigate` sets a Safari or Chromium tab URL through AppleScript without omnibox typing.
-- **Visible, cancellable control.** A separate agent process draws the persistent automation cursor, transient action banner, target highlights, click flashes, and an Esc-to-cancel affordance. The overlay does not appear in captures.
+- **Visible, cancellable control.** A separate agent process draws the persistent automation cursor, transient action banner, click flashes, and an Esc-to-cancel affordance. The overlay does not appear in captures.
 
 ## Tools
 
