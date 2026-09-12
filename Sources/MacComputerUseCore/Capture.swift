@@ -92,12 +92,21 @@ func boundedPNG(_ image: CGImage) -> (data: Data, width: Int, height: Int)? {
         return (d, image.width, image.height)
     }
     var best: (data: Data, width: Int, height: Int)?
-    while scale >= screenshotMinScale {
-        guard let r = resizedImage(image, scale: scale), let d = pngData(r) else { break }
-        best = (d, r.width, r.height)
-        if d.count <= screenshotMaxPNGBytes { return best }
+    // Every attempt allocates a resize context, its output image, and an
+    // NSBitmapImageRep — tens of MB apiece at Retina sizes. Drain per iteration so a
+    // multi-step shrink holds one intermediate at a time, not all of them. `repeat`
+    // rather than `while` so a capture wider than maxDimension/minScale still gets
+    // downscaled once instead of falling through to a full-resolution encode below.
+    repeat {
+        let attempt: (data: Data, width: Int, height: Int)? = autoreleasepool {
+            guard let r = resizedImage(image, scale: scale), let d = pngData(r) else { return nil }
+            return (d, r.width, r.height)
+        }
+        guard let attempt else { break }
+        best = attempt
+        if attempt.data.count <= screenshotMaxPNGBytes { return best }
         scale *= 0.85
-    }
+    } while scale >= screenshotMinScale
     if best == nil, let d = pngData(image) { best = (d, image.width, image.height) }
     return best
 }

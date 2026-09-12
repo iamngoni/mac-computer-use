@@ -27,9 +27,15 @@ func handle(_ msg: [String: Any]) {
 // MCP stdio loop (runs on the main thread; pure CLI, no AppKit).
 func runStdinLoop() -> Never {
     while let line = readLine(strippingNewline: true) {
-        if line.isEmpty { continue }
-        guard let data = line.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { log("bad json"); continue }
-        handle(obj)
+        // Nothing drains the implicit top-level pool on this thread — there is no run
+        // loop here, only readLine. Without a pool per message every autoreleased AX
+        // object and image buffer lives until the client disconnects, which on a
+        // long-lived session is gigabytes. Drain on each request instead.
+        autoreleasepool {
+            if line.isEmpty { return }
+            guard let data = line.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { log("bad json"); return }
+            handle(obj)
+        }
     }
     OverlayController.shared.cleanup()
     exit(0) // stdin closed -> client gone
