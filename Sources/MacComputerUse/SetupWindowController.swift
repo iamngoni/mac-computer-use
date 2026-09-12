@@ -142,7 +142,7 @@ final class SetupWindowController: NSWindowController {
     private func refreshClients() {
         for client in SupportedMCPClient.allCases {
             clientRows[client]?.showLoading()
-            DispatchQueue.global(qos: .userInitiated).async { [registrationService] in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, registrationService] in
                 let state = registrationService.inspect(client)
                 DispatchQueue.main.async { [weak self] in
                     self?.clientRows[client]?.update(state: state)
@@ -153,7 +153,7 @@ final class SetupWindowController: NSWindowController {
 
     fileprivate func install(_ client: SupportedMCPClient, replaceExisting: Bool) {
         clientRows[client]?.showLoading()
-        DispatchQueue.global(qos: .userInitiated).async { [registrationService] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, registrationService] in
             let result = registrationService.install(client, replaceExisting: replaceExisting)
             let state = registrationService.inspect(client)
             DispatchQueue.main.async { [weak self] in

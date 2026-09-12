@@ -202,7 +202,7 @@ final class CoreContractTests: XCTestCase {
         let bounds = CGRect(x: 0, y: 0, width: 72, height: 72)
         XCTAssertEqual(
             cursorPointerDrawRect(in: bounds),
-            CGRect(x: 24, y: 7, width: 36, height: 36)
+            CGRect(x: 28, y: 7.5, width: 36, height: 36)
         )
         XCTAssertEqual(
             cursorPulseDrawRect(in: bounds, scale: 1),

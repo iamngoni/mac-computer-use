@@ -73,7 +73,7 @@ func menuBarPresentation(
 
 public struct AutomationCursorAssets {
     public static let canvasSize = CGSize(width: 36, height: 36)
-    public static let pointerHotspot = CGPoint(x: 12, y: 7)
+    public static let pointerHotspot = CGPoint(x: 8, y: 7.5)
 
     public let pointer: NSImage
     public let pulse: NSImage
@@ -581,11 +581,13 @@ final class AutomationCursorView: NSView {
             clickStartedAt: clickStartedAt,
             cancelling: cancelling
         )
-        assets.pulse.draw(
-            in: cursorPulseDrawRect(in: bounds, scale: pulse.scale),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: pulse.opacity
+        // Follow the pointer silhouette with a breathing white edge glow.
+        // Click feedback changes the glow radius without moving the hotspot.
+        context.saveGState()
+        context.setShadow(
+            offset: .zero,
+            blur: 2.5 * pulse.scale,
+            color: NSColor.white.withAlphaComponent(pulse.opacity).cgColor
         )
         assets.pointer.draw(
             in: cursorPointerDrawRect(in: bounds),
@@ -593,6 +595,7 @@ final class AutomationCursorView: NSView {
             operation: .sourceOver,
             fraction: cancelling ? 0.65 : 1
         )
+        context.restoreGState()
     }
 }
 
