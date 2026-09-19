@@ -334,7 +334,9 @@ final class CoreContractTests: XCTestCase {
             ownerPID: Int,
             agentPID: Int,
             channelID: String,
-            apps: [String]
+            apps: [String],
+            controlling: Bool = true,
+            lingerUntil: Double = 0
         ) throws {
             let directory = root.appendingPathComponent(
                 "mac-computer-use-overlay-\(ownerPID)-\(channelID)",
@@ -349,6 +351,9 @@ final class CoreContractTests: XCTestCase {
             let state: [String: Any] = [
                 "pid": ownerPID,
                 "controlled_apps": apps,
+                "current_app": apps.first ?? "",
+                "controlling": controlling,
+                "lingerUntil": lingerUntil,
             ]
             try JSONSerialization.data(withJSONObject: ready).write(
                 to: directory.appendingPathComponent("ready.json")
@@ -362,10 +367,25 @@ final class CoreContractTests: XCTestCase {
         try writeSession(ownerPID: 102, agentPID: 202, channelID: "live-b", apps: ["Finder", "Safari"])
         try writeSession(ownerPID: 103, agentPID: 203, channelID: "stale", apps: ["Ghost"])
 
-        let apps = activeOverlayControlledApps(in: root) { pid in
-            [101, 102, 201, 202].contains(Int(pid))
+        try writeSession(ownerPID: 104, agentPID: 204, channelID: "idle", apps: ["Calculator"], controlling: false)
+        try writeSession(ownerPID: 105, agentPID: 205, channelID: "linger", apps: ["Notes"], controlling: false, lingerUntil: 11)
+        try writeSession(ownerPID: 106, agentPID: 206, channelID: "history", apps: ["Safari", "Old App"])
+
+        let alive: (pid_t) -> Bool = { [101, 102, 104, 105, 106, 201, 202, 204, 205, 206].contains(Int($0)) }
+        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 10, processIsAlive: alive), ["Finder", "Notes", "Safari"])
+        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), ["Finder", "Safari"])
+
+        // A live connection and its overlay can persist indefinitely after end().
+        // Clearing activity must remove every historical app without killing either.
+        for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            let url = directory.appendingPathComponent("state.json")
+            var state = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+            state["controlling"] = false
+            state["lingerUntil"] = 0
+            try JSONSerialization.data(withJSONObject: state).write(to: url)
         }
-        XCTAssertEqual(apps, ["Finder", "Safari"])
+        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), [])
+        XCTAssertEqual(menuBarPresentation(currentApp: nil, controlledApps: []).statusTitle, "Ready")
     }
 
     func testMenuBarLeaseAllowsOneOwnerAndCleanTakeover() throws {

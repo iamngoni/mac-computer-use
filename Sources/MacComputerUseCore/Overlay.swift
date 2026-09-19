@@ -7,7 +7,7 @@ import ImageIO
 import ScreenCaptureKit
 import Darwin
 
-// MARK: - Overlay (followable cursor, banner, click flashes, target highlight)
+// MARK: - Overlay (followable cursor, banner, click feedback)
 let accent = NSColor(srgbRed: 0.42, green: 0.58, blue: 1.0, alpha: 1.0)
 
 struct OverlayPresentation {
@@ -54,8 +54,8 @@ func menuBarPresentation(
     let statusTitle: String
     switch apps.count {
     case 0:
-        accessibilityLabel = "Mac Computer Use active"
-        statusTitle = "Active"
+        accessibilityLabel = "Mac Computer Use ready"
+        statusTitle = "Ready"
     case 1:
         accessibilityLabel = "Mac Computer Use active: \(apps[0])"
         statusTitle = "Active · \(apps[0])"
@@ -253,7 +253,7 @@ final class AutomationStatusBarController {
         menu.addItem(heading)
         if presentation.controlledAppTitles.isEmpty {
             let none = NSMenuItem(
-                title: "No app controlled yet",
+                title: "No apps active",
                 action: nil,
                 keyEquivalent: ""
             )
@@ -333,6 +333,7 @@ public func overlayProcessIsAlive(_ pid: pid_t) -> Bool {
 
 public func activeOverlayControlledApps(
     in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    now: Double = CACurrentMediaTime(),
     processIsAlive: (pid_t) -> Bool = overlayProcessIsAlive
 ) -> [String] {
     guard let directories = try? FileManager.default.contentsOfDirectory(
@@ -357,10 +358,11 @@ public func activeOverlayControlledApps(
               processIsAlive(pid_t(agentPID)) else {
             continue
         }
-        for app in state["controlled_apps"] as? [String] ?? [] {
-            let normalized = app.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty { applications.insert(normalized) }
-        }
+        // A connected process is not necessarily performing an action. Never
+        // present its session history as current activity (including older clients).
+        let controlling = state["controlling"] as? Bool ?? false
+        let lingerUntil = state["lingerUntil"] as? Double ?? 0
+        guard controlling || now < lingerUntil else { continue }
         if let current = state["current_app"] as? String {
             let normalized = current.trimmingCharacters(in: .whitespacesAndNewlines)
             if !normalized.isEmpty { applications.insert(normalized) }
@@ -628,7 +630,6 @@ final class OverlayView: NSView {
     var controlling = false
     var cancelling = false
     var status = ""
-    var target: CGRect? = nil            // window-local
 
 
     override var isFlipped: Bool { false }
@@ -637,17 +638,6 @@ final class OverlayView: NSView {
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.clear(dirty)
-
-        // Target element highlight
-        if let t = target {
-            let path = NSBezierPath(roundedRect: t.insetBy(dx: -3, dy: -3), xRadius: 7, yRadius: 7)
-            accent.withAlphaComponent(0.95).setStroke()
-            path.lineWidth = 2.5
-            ctx.setShadow(offset: .zero, blur: 10, color: accent.withAlphaComponent(0.8).cgColor)
-            path.stroke()
-            ctx.setShadow(offset: .zero, blur: 0, color: nil)
-            accent.withAlphaComponent(0.10).setFill(); path.fill()
-        }
 
         // Status banner (top-center of primary screen)
         if controlling {
@@ -1108,7 +1098,6 @@ func runOverlayAgent(
         log("automation cursor panel has an invalid content view")
         exit(2)
     }
-    func toLocalR(_ r: CGRect) -> CGRect { CGRect(x: r.minX - window.frame.minX, y: r.minY - window.frame.minY, width: r.width, height: r.height) }
 
     let keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { ev in
         if ev.keyCode == 53 { FileManager.default.createFile(atPath: cancelPath, contents: nil) }
@@ -1167,15 +1156,6 @@ func runOverlayAgent(
         } else {
             cursorMotion.reset()
             displayedCursorPoint = nil
-        }
-        if let t = st["target"] as? [Double], t.count == 4 {
-            view.target = toLocalR(
-                quartzRectToCocoa(
-                    CGRect(x: t[0], y: t[1], width: t[2], height: t[3])
-                )
-            )
-        } else {
-            view.target = nil
         }
         let flashes = st["flashes"] as? [[Double]] ?? []
         if let latestFlash = flashes.last, latestFlash.count == 3 {
