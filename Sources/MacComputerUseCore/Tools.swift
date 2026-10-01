@@ -406,11 +406,6 @@ func toolSecondaryAction(_ args: [String: Any]) -> [String: Any] {
     let a = action.hasPrefix("AX") ? action : "AX\(action)"
     return controlled("Action \(a)", appPID: pid, targetQuartz: elementFrame(idx)) { AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true) }
 }
-func toolSelectText(_ args: [String: Any]) -> [String: Any] {
-    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
-    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
-    return controlled("Selecting", appPID: pid, targetQuartz: elementFrame(idx)) { _ = AXUIElementPerformAction(el, "AXPress" as CFString); return toolText("Focused [\(idx)].") }
-}
 
 struct ToolDefinition {
     let name: String
@@ -616,9 +611,21 @@ func toolDefinitions() -> [ToolDefinition] {
         ),
         ToolDefinition(
             name: "select_text",
-            description: "Focus a text element.",
+            description: "Select text inside a text element via accessibility (background, never clicks or presses). 'text' must occur exactly (case-sensitive) in the element's full value; if it occurs more than once the call fails unless prefix/suffix/occurrence pick one. selection cursor_before/cursor_after places the caret instead. The result is read back and verified. Secure (password) fields are refused.",
             inputSchema: obj(
-                ["app": app, "element_index": string, "text": string],
+                [
+                    "app": app,
+                    "element_index": string,
+                    "text": ["type": "string", "minLength": 1, "description": "Exact text to select."],
+                    "prefix": ["type": "string", "description": "Only match where this text immediately precedes it."],
+                    "suffix": ["type": "string", "description": "Only match where this text immediately follows it."],
+                    "occurrence": ["type": "integer", "minimum": 1, "description": "1-based pick among the remaining matches. Required when more than one remains."],
+                    "selection": [
+                        "type": "string",
+                        "enum": TextSelectionMode.allCases.map(\.rawValue),
+                        "description": "text (default) selects the match; cursor_before/cursor_after place a zero-length caret at its start/end.",
+                    ],
+                ],
                 ["app", "element_index", "text"]
             ),
             handler: toolSelectText
