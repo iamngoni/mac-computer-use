@@ -383,8 +383,8 @@ func toolDesktopPressKey(_ args: [String: Any]) -> [String: Any] {
     guard desktopSnapshot(for: token) != nil else {
         return toolText("desktop_press_key needs a fresh get_desktop_state snapshot; the token is stale or unknown.", isError: true)
     }
-    guard desktopKeySpecIsKnown(key) else {
-        return toolText("Unknown key: \(key).", isError: true)
+    if let problem = keySpecProblem(key) {
+        return toolText(problem.description, isError: true)
     }
     return controlled("Pressing desktop key", appName: "Desktop") {
         guard let lease = GlobalInputLease.acquire() else {
