@@ -109,8 +109,15 @@ final class MCPRelay: @unchecked Sendable {
 
         if method == "initialize", let id {
             initializeMessage = message
-            if !isConnected, let result = connect() {
-                writeToClient(["jsonrpc": "2.0", "id": id, "result": result])
+            if !isConnected {
+                // One attempt only, so clients with short startup timeouts
+                // get a clear local answer instead of timing out.
+                if let result = connect() {
+                    writeToClient(["jsonrpc": "2.0", "id": id, "result": result])
+                } else {
+                    lock.lock(); let reason = lastReason; lock.unlock()
+                    if let reply = relayLocalReply(to: message, reason: reason) { writeToClient(reply) }
+                }
                 return
             }
         }
@@ -143,7 +150,9 @@ final class MCPRelay: @unchecked Sendable {
         data.append(0x0A)
         if writeAll(current, data) { return true }
         if let id { lock.lock(); inFlight.removeValue(forKey: jsonRPCIdentifierKey(id)); lock.unlock() }
-        dropConnection(current)
+        // Only the reader thread closes the socket: it drains what is left,
+        // answers the remaining requests once, and then closes.
+        shutdown(current, SHUT_RDWR)
         return false
     }
 
@@ -311,7 +320,7 @@ final class MCPRelay: @unchecked Sendable {
             lock.lock()
             let isCurrent = generation == currentGeneration
             lock.unlock()
-            if isCurrent { dropConnection(connection) }
+            if isCurrent { dropConnection(connection) } else { close(connection) }
         }
         thread.name = "mac-computer-use.relay"
         thread.start()

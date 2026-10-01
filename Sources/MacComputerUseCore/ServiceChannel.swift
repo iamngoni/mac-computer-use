@@ -98,15 +98,20 @@ final class JSONLineChannel: @unchecked Sendable {
 
     @discardableResult
     func send(_ object: [String: Any]) -> Bool {
-        guard isOpen else { return false }
+        let line = encodeJSONLine(object)
+        // The reader thread closes the descriptor under this lock, so a write
+        // can never land on a closed (or reused) descriptor.
         writeLock.lock()
-        let delivered = writeAll(descriptor, encodeJSONLine(object))
-        writeLock.unlock()
+        defer { writeLock.unlock() }
+        guard isOpen else { return false }
+        let delivered = writeAll(descriptor, line)
         if !delivered { markClosed() }
         return delivered
     }
 
-    /// Reads messages on a background thread until the peer closes.
+    /// Reads messages on a background thread until the peer closes, then
+    /// closes the descriptor. The reader owns it, so every channel's
+    /// descriptor is released exactly once.
     func startReading(
         onMessage: @escaping ([String: Any]) -> Void,
         onClose: @escaping () -> Void
@@ -120,6 +125,7 @@ final class JSONLineChannel: @unchecked Sendable {
             }
             self?.markClosed()
             onClose()
+            self?.closeDescriptor()
         }
         thread.name = "mac-computer-use.channel"
         thread.start()
@@ -129,12 +135,20 @@ final class JSONLineChannel: @unchecked Sendable {
         stateLock.lock(); open = false; stateLock.unlock()
     }
 
+    /// Ends the conversation. The reader thread sees end of file and closes
+    /// the descriptor itself.
     func close() {
         stateLock.lock()
         let wasOpen = open
         open = false
         stateLock.unlock()
         if wasOpen { shutdown(descriptor, SHUT_RDWR) }
+    }
+
+    private func closeDescriptor() {
+        writeLock.lock()
+        Darwin.close(descriptor)
+        writeLock.unlock()
     }
 }
 

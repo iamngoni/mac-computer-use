@@ -27,6 +27,8 @@ func handle(_ msg: [String: Any]) {
         let params = msg["params"] as? [String: Any] ?? [:]
         let name = params["name"] as? String ?? ""
         let reportsBusy = WorkerSession.shared.isAttached
+        // A brake from an earlier Esc must not cancel this new call.
+        if reportsBusy, !WorkerSession.shared.isPaused { cancelFlag.set(false) }
         if reportsBusy { WorkerSession.shared.reportBusy(true, tool: name) }
         let result = dispatchTool(name, params["arguments"] as? [String: Any] ?? [:])
         if reportsBusy { WorkerSession.shared.reportBusy(false, tool: name) }

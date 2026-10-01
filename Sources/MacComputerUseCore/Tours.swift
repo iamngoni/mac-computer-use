@@ -6,7 +6,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-public struct TourLocator: Codable, Equatable {
+public struct TourLocator: Codable, Equatable, Sendable {
     public var bundleID: String?
     public var appName: String
     public var windowTitle: String?
@@ -17,12 +17,12 @@ public struct TourLocator: Codable, Equatable {
     public var identifier: String?
 }
 
-public struct TourStep: Codable, Equatable {
+public struct TourStep: Codable, Equatable, Sendable {
     public var instruction: String
     public var locator: TourLocator
 }
 
-public struct TourFile: Codable, Equatable {
+public struct TourFile: Codable, Equatable, Sendable {
     public var version = 1
     public var name: String
     public var title: String
@@ -108,6 +108,7 @@ func tourLocator(for element: AXUIElement, pid: pid_t, windowTitle: String?) -> 
 /// whose title matches. Bounded so a huge tree cannot stall the caller.
 func findTourElement(_ locator: TourLocator, pid: pid_t, limit: Int = 4000) -> AXUIElement? {
     let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 0.5)
     var windows = axArr(app, "AXWindows")
     if let title = locator.windowTitle,
        let index = windows.firstIndex(where: { axStr($0, "AXTitle") == title }) {

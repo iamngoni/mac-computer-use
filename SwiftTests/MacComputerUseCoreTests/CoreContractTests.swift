@@ -59,18 +59,28 @@ final class CoreContractTests: XCTestCase {
         XCTAssertNotNil(relayDisconnectedReply(id: 3, method: "ping")["error"])
     }
 
-    func testClientIdentityKeysSurviveUpdatesButPinUnsignedClients() {
+    func testClientIdentityKeysSurviveUpdatesButPinUnverifiedClients() {
         XCTAssertEqual(
-            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/A/App.app"),
+            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/A/App.app",
+                                     teamVerified: true, appleVerified: false),
             "team:TEAM123:com.example.app"
         )
         XCTAssertEqual(
-            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app"),
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app",
+                                     teamVerified: false, appleVerified: true),
             "apple:com.apple.Terminal"
         )
+        // A self-signed binary that merely claims Terminal's identifier must
+        // not inherit Terminal's approval.
         XCTAssertEqual(
-            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "a.out-1234", path: "/Users/me/tool"),
-            "path:/Users/me/tool"
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/tmp/Fake.app",
+                                     teamVerified: false, appleVerified: false),
+            "path:/tmp/Fake.app"
+        )
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/tmp/Fake.app",
+                                     teamVerified: false, appleVerified: false),
+            "path:/tmp/Fake.app"
         )
         XCTAssertEqual(
             outermostApplicationBundle(containingExecutable: "/Applications/Host.app/Contents/Frameworks/Host Helper.app/Contents/MacOS/Host Helper"),
@@ -83,19 +93,63 @@ final class CoreContractTests: XCTestCase {
         let suite = "mac-computer-use-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = ClientApprovalStore(defaults: defaults)
+        let store = ClientApprovalStore(defaults: defaults, signer: nil)
         let identity = ServiceClientIdentity(
             key: "team:T:com.example", displayName: "Example", bundleIdentifier: "com.example",
-            teamIdentifier: "T", signer: "Developer ID Application: Example (T)", path: "/Applications/Example.app"
+            teamIdentifier: "T", signer: "Developer ID Application: Example (T)", path: "/Applications/Example.app",
+            requirement: "identifier \"com.example\" and anchor apple generic"
         )
         XCTAssertFalse(store.isApproved(identity.key))
         store.approve(identity)
         store.approve(identity)
-        XCTAssertTrue(ClientApprovalStore(defaults: defaults).isApproved(identity.key))
+        XCTAssertTrue(ClientApprovalStore(defaults: defaults, signer: nil).isApproved(identity.key))
         XCTAssertEqual(store.clients.count, 1)
         XCTAssertEqual(store.clients.first?.detail, "Developer ID Application: Example (T)")
+        // Approval also requires the client's code to still satisfy the stored requirement.
+        XCTAssertTrue(store.isApproved(identity, satisfies: { $0 == identity.requirement }))
+        XCTAssertFalse(store.isApproved(identity, satisfies: { _ in false }))
         store.revoke(identity.key)
         XCTAssertFalse(store.isApproved(identity.key))
+    }
+
+    func testSignedApprovalsIgnoreTamperedPreferences() throws {
+        struct FixedSigner: ApprovalSigner {
+            func signature(for data: Data) -> Data? { hmacSHA256(key: Data("k".utf8), data: data) }
+        }
+        let suite = "mac-computer-use-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ClientApprovalStore(defaults: defaults, signer: FixedSigner())
+        let identity = ServiceClientIdentity(
+            key: "path:/a", displayName: "A", bundleIdentifier: nil, teamIdentifier: nil, signer: nil, path: "/a", requirement: "cdhash H\"00\""
+        )
+        store.approve(identity)
+        XCTAssertTrue(store.isApproved("path:/a"))
+        // Another process writes itself into the preferences without the key.
+        let forged = try JSONEncoder().encode([ApprovedServiceClient(
+            key: "path:/evil", displayName: "Evil", detail: "", approvedAt: Date(), requirement: nil
+        )])
+        defaults.set(forged, forKey: "approvedServiceClients")
+        XCTAssertFalse(store.isApproved("path:/evil"))
+        XCTAssertEqual(store.clients, [])
+    }
+
+    func testTestAutoApprovalNeverAppliesToALaunchServicesService() {
+        let env = ["MACCU_RUNTIME_DIR": "/tmp/x", "MACCU_TEST_AUTO_APPROVE": "1"]
+        XCTAssertTrue(testAutoApprovalAllowed(environment: env, servicePID: 10, responsiblePID: { _ in 99 }))
+        XCTAssertFalse(testAutoApprovalAllowed(environment: env, servicePID: 10, responsiblePID: { $0 }))
+        XCTAssertFalse(testAutoApprovalAllowed(environment: ["MACCU_TEST_AUTO_APPROVE": "1"], servicePID: 10, responsiblePID: { _ in 99 }))
+    }
+
+    func testWorkersNeverInheritLoaderOverrides() {
+        let environment = workerEnvironment(from: [
+            "HOME": "/Users/me", "PATH": "/usr/bin", "LC_ALL": "en_US.UTF-8",
+            "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib", "MACCU_CURSOR_PACE": "off",
+            "MACCU_TEST_AUTO_APPROVE": "1", "OPENAI_API_KEY": "secret",
+        ])
+        XCTAssertEqual(environment, [
+            "HOME": "/Users/me", "PATH": "/usr/bin", "LC_ALL": "en_US.UTF-8", "MACCU_CURSOR_PACE": "off",
+        ])
     }
 
     func testRuntimeDirectoryHonoursOverrideAndKeepsSocketPathShort() {

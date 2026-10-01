@@ -10,6 +10,8 @@ import CoreGraphics
 import Darwin
 import Foundation
 import QuartzCore
+import CommonCrypto
+import Security
 
 // MARK: - Approved clients
 
@@ -18,27 +20,120 @@ public struct ApprovedServiceClient: Codable, Equatable {
     public let displayName: String
     public let detail: String
     public let approvedAt: Date
+    /// The designated requirement the client had when approved.
+    public let requirement: String?
+}
+
+/// Authenticates the stored approvals so another process cannot add itself
+/// by writing the app's preferences.
+public protocol ApprovalSigner {
+    func signature(for data: Data) -> Data?
+}
+
+/// HMAC-SHA256 with a random key kept in the login keychain, whose access
+/// list trusts only this app's code signature. Used for team-signed builds;
+/// ad-hoc development builds change identity on every rebuild, so they would
+/// prompt for keychain access after each one.
+public final class KeychainApprovalSigner: ApprovalSigner {
+    private let key: Data
+
+    public static func makeIfAvailable() -> KeychainApprovalSigner? {
+        guard currentProcessIsTeamSigned(), let key = loadOrCreateKey() else { return nil }
+        return KeychainApprovalSigner(key: key)
+    }
+
+    init(key: Data) { self.key = key }
+
+    public func signature(for data: Data) -> Data? {
+        hmacSHA256(key: key, data: data)
+    }
+
+    private static let service = "com.modestnerd.mac-computer-use.approvals"
+    private static let account = "approval-signing-key"
+
+    private static func loadOrCreateKey() -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess, let data = item as? Data, data.count == 32 { return data }
+        guard status == errSecItemNotFound else { return nil }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+        let key = Data(bytes)
+        let add: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: key,
+        ]
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess ? key : nil
+    }
+}
+
+func currentProcessIsTeamSigned() -> Bool {
+    var code: SecCode?
+    var staticCode: SecStaticCode?
+    var information: CFDictionary?
+    guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+          SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+          SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+          let dictionary = information as? [String: Any] else { return false }
+    return !((dictionary[kSecCodeInfoTeamIdentifier as String] as? String) ?? "").isEmpty
+}
+
+func hmacSHA256(key: Data, data: Data) -> Data {
+    var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+    key.withUnsafeBytes { keyBytes in
+        data.withUnsafeBytes { dataBytes in
+            CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA256), keyBytes.baseAddress, key.count, dataBytes.baseAddress, data.count, &digest)
+        }
+    }
+    return Data(digest)
 }
 
 /// Clients the user has allowed to drive the Mac through the service.
 public final class ClientApprovalStore {
     private let defaults: UserDefaults
+    private let signer: ApprovalSigner?
     private let defaultsKey = "approvedServiceClients"
+    private let signatureKey = "approvedServiceClientsSignature"
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard, signer: ApprovalSigner? = KeychainApprovalSigner.makeIfAvailable()) {
         self.defaults = defaults
+        self.signer = signer
     }
 
+    /// Approved clients. With a signer, tampered or unsigned data reads as
+    /// no approvals, so the user is simply asked again.
     public var clients: [ApprovedServiceClient] {
-        guard let data = defaults.data(forKey: defaultsKey),
-              let clients = try? JSONDecoder().decode([ApprovedServiceClient].self, from: data) else {
-            return []
+        guard let data = defaults.data(forKey: defaultsKey) else { return [] }
+        if let signer {
+            guard let stored = defaults.data(forKey: signatureKey),
+                  let expected = signer.signature(for: data),
+                  constantTimeEqual(stored, expected) else {
+                log("ignoring approved clients whose signature does not match")
+                return []
+            }
         }
-        return clients
+        return (try? JSONDecoder().decode([ApprovedServiceClient].self, from: data)) ?? []
     }
 
     public func isApproved(_ key: String) -> Bool {
         clients.contains { $0.key == key }
+    }
+
+    /// Approved and still the same code: the client must satisfy the
+    /// requirement it had when the user allowed it.
+    public func isApproved(_ identity: ServiceClientIdentity, satisfies: (String) -> Bool) -> Bool {
+        guard let entry = clients.first(where: { $0.key == identity.key }) else { return false }
+        guard let requirement = entry.requirement else { return false }
+        return satisfies(requirement)
     }
 
     public func approve(_ identity: ServiceClientIdentity, at date: Date = Date()) {
@@ -47,7 +142,8 @@ public final class ClientApprovalStore {
             key: identity.key,
             displayName: identity.displayName,
             detail: identity.detail,
-            approvedAt: date
+            approvedAt: date,
+            requirement: identity.requirement
         ))
         save(current)
     }
@@ -57,10 +153,19 @@ public final class ClientApprovalStore {
     }
 
     private func save(_ clients: [ApprovedServiceClient]) {
-        if let data = try? JSONEncoder().encode(clients) {
-            defaults.set(data, forKey: defaultsKey)
+        guard let data = try? JSONEncoder().encode(clients) else { return }
+        defaults.set(data, forKey: defaultsKey)
+        if let signer, let signature = signer.signature(for: data) {
+            defaults.set(signature, forKey: signatureKey)
         }
     }
+}
+
+func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
+    guard a.count == b.count else { return false }
+    var difference: UInt8 = 0
+    for (x, y) in zip(a, b) { difference |= x ^ y }
+    return difference == 0
 }
 
 // MARK: - Sessions
@@ -114,8 +219,8 @@ final class ServiceSession {
 final class ActiveInteraction {
     let sessionID: String
     let requestID: Int
-    let windowIDs: () -> [CGWindowID]
-    let dismiss: () -> Void
+    var windowIDs: () -> [CGWindowID]
+    var dismiss: () -> Void
     var timer: Timer?
 
     init(sessionID: String, requestID: Int, windowIDs: @escaping () -> [CGWindowID], dismiss: @escaping () -> Void) {
@@ -123,6 +228,31 @@ final class ActiveInteraction {
         self.requestID = requestID
         self.windowIDs = windowIDs
         self.dismiss = dismiss
+    }
+}
+
+/// Test auto-approval applies only to an isolated runtime whose service was
+/// started directly by a test runner. A LaunchServices launch (which holds
+/// the app's permissions) is its own responsible process and never qualifies,
+/// so `open --env` cannot switch approval off for a real service.
+func testAutoApprovalAllowed(
+    environment: [String: String],
+    servicePID: pid_t = getpid(),
+    responsiblePID: (pid_t) -> pid_t = responsibleProcessIdentifier
+) -> Bool {
+    MacComputerUseRuntime.isOverridden(environment: environment)
+        && environment["MACCU_TEST_AUTO_APPROVE"] == "1"
+        && responsiblePID(servicePID) != servicePID
+}
+
+/// Workers get only the variables they need, never loader or library
+/// overrides that a launcher might have injected into the service.
+func workerEnvironment(from environment: [String: String]) -> [String: String] {
+    let names: Set<String> = ["HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "TMPDIR", "__CF_USER_TEXT_ENCODING"]
+    return environment.filter { key, _ in
+        guard !key.hasPrefix("DYLD_") else { return false }
+        return names.contains(key) || key.hasPrefix("LC_")
+            || (key.hasPrefix("MACCU_") && key != "MACCU_TEST_AUTO_APPROVE")
     }
 }
 
@@ -173,7 +303,21 @@ final class TourPlayback {
             return
         }
         let step = tour.steps[index]
-        guard let element = findTourElement(step.locator, pid: pid), let frame = axFrame(element) else {
+        let pid = self.pid
+        let locator = step.locator
+        // A slow or hung app must not freeze the overlay, so search off the
+        // main thread and come back with just the frame.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let frame = findTourElement(locator, pid: pid).flatMap(axFrame)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.showStep(step, frame: frame) }
+            }
+        }
+    }
+
+    private func showStep(_ step: TourStep, frame: CGRect?) {
+        guard !finished, let presenter else { return }
+        guard let frame else {
             let wanted = step.locator.title ?? step.locator.description ?? "the next item"
             presenter.moveLocalCursor(sessionID: Self.sessionID, name: tour.title, to: primaryScreenCenterQuartz(), pace: .teach, linger: 0.5)
             presenter.showBubble(
@@ -229,7 +373,7 @@ public final class ServiceHost {
     private var listenDescriptor: Int32 = -1
     private var sessions: [String: ServiceSession] = [:]
     private var acceptingConnections = false
-    private var deniedThisRun = Set<String>()
+    private var deniedThisRun: [String: ServiceClientIdentity] = [:]
     private var promptQueue: [ServiceClientIdentity] = []
     private var keyMonitors: [Any] = []
     private var refreshScheduled = false
@@ -275,8 +419,17 @@ public final class ServiceHost {
             while true {
                 let connection = accept(descriptor, nil, nil)
                 if connection < 0 {
-                    if errno == EINTR || errno == ECONNABORTED { continue }
-                    return // the listener was closed
+                    switch errno {
+                    case EINTR, ECONNABORTED:
+                        continue
+                    case EBADF, EINVAL:
+                        return // the listener was closed
+                    default:
+                        // Out of descriptors or memory: wait, never stop listening.
+                        log("accept failed: \(String(cString: strerror(errno)))")
+                        usleep(100_000)
+                        continue
+                    }
                 }
                 _ = fcntl(connection, F_SETFD, FD_CLOEXEC)
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -348,6 +501,17 @@ public final class ServiceHost {
 
     public var approvedClients: [ApprovedServiceClient] { approvals.clients }
 
+    /// Clients the user turned down since the service started; Setup can
+    /// still allow them without a restart.
+    public var deniedClients: [ServiceClientIdentity] {
+        deniedThisRun.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    public func allowDeniedClient(_ key: String) {
+        guard let identity = deniedThisRun[key] else { return }
+        decide(identity, allowed: true)
+    }
+
     public func revokeClient(_ key: String) {
         approvals.revoke(key)
         for session in sessions.values where session.client.key == key {
@@ -369,13 +533,22 @@ public final class ServiceHost {
 
     private var tourPlayback: TourPlayback?
 
-    public var savedTours: [TourFile] { TourStore.all() }
+    private var toursCache: (stamp: Date?, tours: [TourFile]) = (nil, [])
+
+    /// Saved tours, re-read only when the tours folder changes.
+    public var savedTours: [TourFile] {
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: TourStore.directory().path))?[.modificationDate] as? Date
+        if stamp == nil || stamp != toursCache.stamp {
+            toursCache = (stamp, TourStore.all())
+        }
+        return toursCache.tours
+    }
 
     /// Replays a saved tour with the service's own cursor. The person asked
     /// for it from the menu, so the app is opened and brought forward.
     public func playTour(named name: String) {
         guard let presenter, tourPlayback == nil,
-              let tour = TourStore.all().first(where: { $0.name == name }),
+              let tour = savedTours.first(where: { $0.name == name }),
               let locator = tour.steps.first?.locator else { return }
         let bundleID = locator.bundleID
         func launchAndPlay(attempt: Int) {
@@ -474,7 +647,14 @@ public final class ServiceHost {
             close(connection)
             return
         }
-        let identity = identifyServiceClient(peerProcess: peer)
+        guard let identity = identifyServiceClient(peerProcess: peer) else {
+            writeAll(connection, encodeJSONLine([
+                "maccu_service": 1, "accepted": false,
+                "error": "Mac Computer Use could not identify the app that started this connection.",
+            ]))
+            close(connection)
+            return
+        }
         let reportedName = (hello["client_info"] as? [String: Any])?["name"] as? String
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
@@ -563,12 +743,10 @@ public final class ServiceHost {
     }
 
     private func approvalState(for identity: ServiceClientIdentity) -> String {
-        if MacComputerUseRuntime.isOverridden(environment: environment),
-           environment["MACCU_TEST_AUTO_APPROVE"] == "1" {
-            return "approved"
-        }
-        if approvals.isApproved(identity.key) { return "approved" }
-        if deniedThisRun.contains(identity.key) { return "denied" }
+        if testAutoApprovalAllowed(environment: environment) { return "approved" }
+        let pid = pid_t(identity.processIdentifier)
+        if approvals.isApproved(identity, satisfies: { process(pid, satisfies: $0) }) { return "approved" }
+        if deniedThisRun[identity.key] != nil { return "denied" }
         return "pending"
     }
 
@@ -602,7 +780,7 @@ public final class ServiceHost {
         sigaddset(&defaults, SIGTERM)
         posix_spawnattr_setsigdefault(&attributes, &defaults)
 
-        var workerEnvironment = environment
+        var workerEnvironment = workerEnvironment(from: environment)
         workerEnvironment["MACCU_SESSION_ID"] = sessionID
         let arguments = [executablePath, "worker", "--session", sessionID]
         let argv = arguments.map { strdup($0) } + [nil]
@@ -627,6 +805,7 @@ public final class ServiceHost {
             finishInteraction(interaction, respond: nil)
         }
         presenter?.removeSession(sessionID)
+        presenter?.annotations.clear(owner: sessionID)
         agentCam?.sessionEnded(sessionID)
         log("session \(sessionID) ended for \(session.client.displayName)")
         notifyChange()
@@ -669,6 +848,7 @@ public final class ServiceHost {
             presenter?.clearBubble(sessionID: sessionID)
         case "annotate":
             presenter?.annotations.show(
+                owner: sessionID,
                 items: message["items"] as? [[String: Any]] ?? [],
                 caption: message["caption"] as? String,
                 captionAnchor: quartzRect(message["window_bounds"]),
@@ -678,7 +858,7 @@ public final class ServiceHost {
                 reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             )
         case "annotations_clear":
-            presenter?.annotations.clear()
+            presenter?.annotations.clear(owner: sessionID)
         case "countdown":
             presenter?.startCountdown(
                 sessionID: sessionID,
@@ -814,7 +994,12 @@ public final class ServiceHost {
         guard let index = interactions.firstIndex(where: { $0 === interaction }) else { return }
         interactions.remove(at: index)
         interaction.timer?.invalidate()
+        interaction.timer = nil
         interaction.dismiss()
+        // The surface's completion captures this interaction; drop the
+        // closures so the panel and the interaction can both be freed.
+        interaction.dismiss = {}
+        interaction.windowIDs = { [] }
         if let payload, let session = sessions[interaction.sessionID] {
             var message = payload
             message["type"] = "response"
@@ -855,9 +1040,9 @@ public final class ServiceHost {
     private func decide(_ identity: ServiceClientIdentity, allowed: Bool) {
         if allowed {
             approvals.approve(identity)
-            deniedThisRun.remove(identity.key)
+            deniedThisRun.removeValue(forKey: identity.key)
         } else {
-            deniedThisRun.insert(identity.key)
+            deniedThisRun[identity.key] = identity
         }
         let state = allowed ? "approved" : "denied"
         for session in sessions.values where session.client.key == identity.key {
@@ -895,12 +1080,13 @@ public final class ServiceHost {
             tourPlayback.cancel()
             return
         }
-        // Esc first dismisses whatever the agent asked the person.
+        // Esc dismisses whatever an agent asked the person, and still stops
+        // any other agent that is acting at the same moment.
+        let now = CACurrentMediaTime()
         if let latest = interactions.last {
             finishInteraction(latest, respond: ["outcome": "cancelled"])
-            return
+            guard sessions.values.contains(where: { $0.controlling }) else { return }
         }
-        let now = CACurrentMediaTime()
         let agentVisible = presenter?.hasVisibleCursor == true
             || sessions.values.contains { $0.isActive(now: now) }
         guard agentVisible else {

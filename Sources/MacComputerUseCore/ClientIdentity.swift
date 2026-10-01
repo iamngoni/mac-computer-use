@@ -17,6 +17,11 @@ public struct ServiceClientIdentity: Equatable, Codable, Sendable {
     public let teamIdentifier: String?
     public let signer: String?
     public let path: String
+    /// The client's designated requirement. Approvals store it and every new
+    /// connection must still satisfy it, the way TCC re-checks its grants.
+    public let requirement: String?
+    /// The responsible process at connection time (not persisted meaningfully).
+    public let processIdentifier: Int32
 
     public init(
         key: String,
@@ -24,7 +29,9 @@ public struct ServiceClientIdentity: Equatable, Codable, Sendable {
         bundleIdentifier: String?,
         teamIdentifier: String?,
         signer: String?,
-        path: String
+        path: String,
+        requirement: String? = nil,
+        processIdentifier: Int32 = 0
     ) {
         self.key = key
         self.displayName = displayName
@@ -32,6 +39,8 @@ public struct ServiceClientIdentity: Equatable, Codable, Sendable {
         self.teamIdentifier = teamIdentifier
         self.signer = signer
         self.path = path
+        self.requirement = requirement
+        self.processIdentifier = processIdentifier
     }
 
     public var detail: String {
@@ -41,20 +50,23 @@ public struct ServiceClientIdentity: Equatable, Codable, Sendable {
     }
 }
 
-/// Builds the approval key. A team identifier plus signing identifier survives
-/// app updates and moves; an unsigned client is pinned to its location.
+/// Builds the approval key. Only identities that were verified against a
+/// certificate chain earn a stable key: a team key survives app updates and
+/// moves, an Apple key covers Apple-signed apps. Anything else, including a
+/// self-signed binary that merely claims an Apple identifier, is pinned to its
+/// location (and to its exact code through the stored requirement).
 public func serviceClientApprovalKey(
     teamIdentifier: String?,
     signingIdentifier: String?,
-    path: String
+    path: String,
+    teamVerified: Bool,
+    appleVerified: Bool
 ) -> String {
-    if let team = teamIdentifier, !team.isEmpty,
+    if teamVerified, let team = teamIdentifier, !team.isEmpty,
        let identifier = signingIdentifier, !identifier.isEmpty {
         return "team:\(team):\(identifier)"
     }
-    if let identifier = signingIdentifier, !identifier.isEmpty,
-       identifier.hasPrefix("com.apple.") {
-        // Apple platform binaries carry no team identifier.
+    if appleVerified, let identifier = signingIdentifier, !identifier.isEmpty {
         return "apple:\(identifier)"
     }
     return "path:\(path)"
@@ -103,15 +115,38 @@ struct CodeSigningSummary {
     let teamIdentifier: String?
     let signingIdentifier: String?
     let signer: String?
+    let teamVerified: Bool
+    let appleVerified: Bool
+    let designatedRequirement: String?
+}
+
+func runningCode(_ pid: pid_t) -> SecCode? {
+    var code: SecCode?
+    let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
+    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess else { return nil }
+    return code
+}
+
+/// True when a running process's code satisfies a requirement string.
+func process(_ pid: pid_t, satisfies requirementText: String) -> Bool {
+    guard let code = runningCode(pid) else { return false }
+    var requirement: SecRequirement?
+    guard SecRequirementCreateWithString(requirementText as CFString, [], &requirement) == errSecSuccess,
+          let requirement else { return false }
+    return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+}
+
+private func codeSatisfies(_ code: SecCode, _ requirementText: String) -> Bool {
+    var requirement: SecRequirement?
+    guard SecRequirementCreateWithString(requirementText as CFString, [], &requirement) == errSecSuccess,
+          let requirement else { return false }
+    return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
 }
 
 /// Reads the dynamic code signature of a running process. Returns nil when
 /// the process's signature is missing or invalid.
 func codeSigningSummary(forProcess pid: pid_t) -> CodeSigningSummary? {
-    var code: SecCode?
-    let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
-    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
-          let code,
+    guard let code = runningCode(pid),
           SecCodeCheckValidity(code, [], nil) == errSecSuccess else {
         return nil
     }
@@ -133,17 +168,33 @@ func codeSigningSummary(forProcess pid: pid_t) -> CodeSigningSummary? {
        let leaf = certificates.first {
         signer = SecCertificateCopySubjectSummary(leaf) as String?
     }
+    let team = dictionary[kSecCodeInfoTeamIdentifier as String] as? String
+    let teamVerified = team.map { team in
+        // Only a real Developer ID / App Store certificate for that team counts.
+        team.allSatisfy { $0.isLetter || $0.isNumber }
+            && codeSatisfies(code, "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"")
+    } ?? false
+    var designated: SecRequirement?
+    var designatedText: CFString?
+    if SecCodeCopyDesignatedRequirement(staticCode, [], &designated) == errSecSuccess, let designated {
+        SecRequirementCopyString(designated, [], &designatedText)
+    }
     return CodeSigningSummary(
-        teamIdentifier: dictionary[kSecCodeInfoTeamIdentifier as String] as? String,
+        teamIdentifier: team,
         signingIdentifier: dictionary[kSecCodeInfoIdentifier as String] as? String,
-        signer: signer
+        signer: signer,
+        teamVerified: teamVerified,
+        appleVerified: codeSatisfies(code, "anchor apple"),
+        designatedRequirement: designatedText as String?
     )
 }
 
-/// Identifies the app responsible for a connected peer process.
-public func identifyServiceClient(peerProcess pid: pid_t) -> ServiceClientIdentity {
+/// Identifies the app responsible for a connected peer process, or nil when
+/// it cannot be identified (such a client is refused rather than lumped
+/// together with every other unidentifiable one).
+public func identifyServiceClient(peerProcess pid: pid_t) -> ServiceClientIdentity? {
     let responsible = responsibleProcessIdentifier(for: pid)
-    let executable = executablePath(forProcess: responsible) ?? "unknown"
+    guard let executable = executablePath(forProcess: responsible) else { return nil }
     let bundlePath = outermostApplicationBundle(containingExecutable: executable)
     let bundle = bundlePath.flatMap { Bundle(path: $0) }
     let signing = codeSigningSummary(forProcess: responsible)
@@ -165,13 +216,17 @@ public func identifyServiceClient(peerProcess pid: pid_t) -> ServiceClientIdenti
         key: serviceClientApprovalKey(
             teamIdentifier: signing?.teamIdentifier,
             signingIdentifier: signing?.signingIdentifier,
-            path: location
+            path: location,
+            teamVerified: signing?.teamVerified ?? false,
+            appleVerified: signing?.appleVerified ?? false
         ),
         displayName: displayName,
         bundleIdentifier: bundleIdentifier,
-        teamIdentifier: signing?.teamIdentifier,
-        signer: signing?.signer,
-        path: location
+        teamIdentifier: (signing?.teamVerified ?? false) ? signing?.teamIdentifier : nil,
+        signer: (signing?.teamVerified ?? false) || (signing?.appleVerified ?? false) ? signing?.signer : nil,
+        path: location,
+        requirement: signing?.designatedRequirement,
+        processIdentifier: responsible
     )
 }
 

@@ -114,7 +114,8 @@ final class WorkerSession: @unchecked Sendable {
         case "pause":
             let isPaused = message["paused"] as? Bool ?? false
             condition.lock(); paused = isPaused; condition.unlock()
-            if isPaused { cancelFlag.set(true) }
+            // Pausing stops the current action; resuming clears the brake.
+            cancelFlag.set(isPaused)
         case "overlay_windows":
             let identifiers = (message["ids"] as? [NSNumber] ?? []).map { CGWindowID($0.uint32Value) }
             condition.lock(); overlayWindows = identifiers; condition.unlock()
@@ -239,6 +240,8 @@ public func runMacComputerUseWorker() -> Never {
     OverlayController.shared.attachServiceChannel(channel)
     toolCallGate = { name in
         guard !diagnosticToolNames.contains(name) else { return nil }
+        // Paused means hands off: no screenshots, pointing or questions either.
+        if WorkerSession.shared.isPaused { return toolText(userPausedMessage, isError: true) }
         return WorkerSession.shared.requireApproval()
     }
     actionGate = {

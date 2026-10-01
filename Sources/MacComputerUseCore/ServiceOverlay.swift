@@ -184,7 +184,7 @@ func quartzRect(_ value: Any?) -> CGRect? {
 final class AnnotationOverlay {
     private let window: NSWindow
     private let rootLayer = CALayer()
-    private var groups: [(id: Int, layer: CALayer, windowID: CGWindowID?, bounds: CGRect?, timer: Timer?)] = []
+    private var groups: [(id: Int, owner: String, layer: CALayer, windowID: CGWindowID?, bounds: CGRect?, timer: Timer?)] = []
     private var nextGroupID = 1
     private var watchTimer: Timer?
     var onVisibilityChanged: (() -> Void)?
@@ -228,6 +228,7 @@ final class AnnotationOverlay {
 
     /// Draws one annotation set. Items carry Quartz screen geometry.
     func show(
+        owner: String,
         items: [[String: Any]],
         caption: String?,
         captionAnchor: CGRect?,
@@ -299,12 +300,13 @@ final class AnnotationOverlay {
                 self.remove(entry.layer)
             }
         }
-        groups.append((groupID, group, windowID, windowBounds, timer))
+        groups.append((groupID, owner, group, windowID, windowBounds, timer))
         startWatching()
     }
 
-    func clear() {
-        for entry in groups { remove(entry.layer) }
+    /// Clears one session's drawings, or everything when `owner` is nil.
+    func clear(owner: String? = nil) {
+        for entry in groups where owner == nil || entry.owner == owner { remove(entry.layer) }
     }
 
     private func remove(_ layer: CALayer) {
@@ -822,6 +824,8 @@ func elementFrameUnder(_ quartz: CGPoint) -> CGRect? {
     guard let pid = windowOwnerUnder(quartz) else { return nil }
     var element: AXUIElement?
     let app = AXUIElementCreateApplication(pid)
+    // Hit-testing runs on the overlay's thread; a hung app must not stall it.
+    AXUIElementSetMessagingTimeout(app, 0.25)
     guard AXUIElementCopyElementAtPosition(app, Float(quartz.x), Float(quartz.y), &element) == .success,
           let element else { return nil }
     return axFrame(element)

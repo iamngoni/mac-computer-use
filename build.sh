@@ -114,6 +114,25 @@ PLIST
 
 plutil -lint "$APP/Contents/Info.plist"
 
+# Local builds are ad-hoc signed. They still use the hardened runtime, which
+# ignores DYLD_* injection into the process that holds the Accessibility and
+# Screen Recording grants. Ad-hoc code has no Team ID, so library validation
+# would refuse the separately signed Sparkle framework; local builds disable
+# only that check. Release builds keep full library validation.
+LOCAL_ENTITLEMENTS=".build/local-app.entitlements"
+if [[ "$BUILD_MODE" != "release" ]]; then
+  cat > "$LOCAL_ENTITLEMENTS" <<ENTITLEMENTS
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+ENTITLEMENTS
+fi
+
 sign_target() {
   local target="$1"
   local preserve_entitlements="${2:-}"
@@ -124,7 +143,10 @@ sign_target() {
       codesign_args+=(--keychain "$SIGNING_KEYCHAIN")
     fi
   else
-    codesign_args+=(--timestamp=none --sign -)
+    codesign_args+=(--options runtime --timestamp=none --sign -)
+    if [[ "$target" == "$APP" ]]; then
+      codesign_args+=(--entitlements "$LOCAL_ENTITLEMENTS")
+    fi
   fi
   if [[ "$preserve_entitlements" == "preserve-entitlements" ]]; then
     codesign_args+=(--preserve-metadata=entitlements)

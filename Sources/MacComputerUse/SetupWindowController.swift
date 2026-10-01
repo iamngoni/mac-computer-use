@@ -153,7 +153,23 @@ final class SetupWindowController: NSWindowController {
             view.removeFromSuperview()
         }
         let clients = serviceHost?.approvedClients ?? []
-        guard !clients.isEmpty else {
+        for denied in serviceHost?.deniedClients ?? [] {
+            let row = horizontalRow()
+            let name = NSTextField(labelWithString: denied.displayName)
+            name.font = .systemFont(ofSize: 13, weight: .medium)
+            let detail = NSTextField(labelWithString: "Not allowed this session")
+            detail.textColor = .systemOrange
+            detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let allow = RevokeButton(title: "Allow", target: self, action: #selector(allowDeniedClient(_:)))
+            allow.bezelStyle = .rounded
+            allow.clientKey = denied.key
+            row.addArrangedSubview(name)
+            row.addArrangedSubview(detail)
+            row.addArrangedSubview(allow)
+            allowedClientsStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: allowedClientsStack.widthAnchor).isActive = true
+        }
+        guard !clients.isEmpty || !(serviceHost?.deniedClients.isEmpty ?? true) else {
             let empty = NSTextField(wrappingLabelWithString: "No apps yet. The first time a client such as Claude Code or Codex acts, Mac Computer Use asks whether to allow it.")
             empty.textColor = .secondaryLabelColor
             allowedClientsStack.addArrangedSubview(empty)
@@ -185,6 +201,12 @@ final class SetupWindowController: NSWindowController {
     @objc private func testCursor() {
         window?.orderOut(nil)
         serviceHost?.runCursorDemo(statusItemFrame: statusItemFrame())
+    }
+
+    @objc private func allowDeniedClient(_ sender: RevokeButton) {
+        guard let key = sender.clientKey else { return }
+        serviceHost?.allowDeniedClient(key)
+        refreshAllowedClients()
     }
 
     @objc private func revokeClient(_ sender: RevokeButton) {
