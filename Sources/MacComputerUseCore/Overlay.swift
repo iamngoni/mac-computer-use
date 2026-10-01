@@ -1211,7 +1211,6 @@ final class OverlayController {
         appName: String?,
         targetQuartz: CGRect?
     ) -> pid_t? {
-        if !usesService { ensureManagerIsRunning() }
         guard let agentPID = ensureAgent() else { return nil }
         let resolvedApp = appName ?? appPID.flatMap {
             NSRunningApplication(processIdentifier: $0)?.localizedName

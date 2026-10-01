@@ -1366,7 +1366,9 @@ class LiveAppResolutionTests(unittest.TestCase):
         self.assertEqual(self.client.process.pid, ready["owner_pid"])
         self.assertEqual(overlay_health["agent_pid"], ready["agent_pid"])
         self.assertEqual(overlay_health["channel_id"], ready["channel_id"])
-        self.assertTrue(overlay_health["menu_bar_item_active"])
+        # In-process sessions no longer launch the service's menu-bar app;
+        # the field only reports whether one is running.
+        self.assertIsInstance(overlay_health["menu_bar_item_active"], bool)
         self.assertEqual(FIXTURE_NAME, overlay_health["current_app"])
         self.assertIn(FIXTURE_NAME, overlay_health["controlled_apps"])
         self.assertTrue(overlay_health["cursor_initialized"])

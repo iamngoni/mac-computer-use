@@ -62,21 +62,6 @@ public func macComputerUseVersion(bundle: Bundle = .main) -> String {
 
 private var activeMCPSessionLease: MCPProcessSessionLease?
 
-func ensureManagerIsRunning(bundle: Bundle = .main) {
-    guard ProcessInfo.processInfo.environment["MACCU_DISABLE_MANAGER"] != "1",
-          bundle.bundleURL.pathExtension == "app",
-          !managerProcessIsRunning() else { return }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    process.arguments = [
-        "-g", "-a", bundle.bundleURL.path,
-        "--args", "manager", "--background",
-    ]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try? process.run()
-}
-
 /// `mcp` mode. Inside MacComputerUse.app it relays to the service so the
 /// client app needs no permissions; unbundled development binaries, tests and
 /// an explicit `--in-process` run the tools in this process instead.
@@ -140,7 +125,9 @@ public func runMacComputerUseService() -> Never {
         exit(EX_TEMPFAIL)
     }
     activeMCPSessionLease = sessionLease
-    ensureManagerIsRunning()
+    // In-process sessions are for development and tests; they do not report
+    // to the service, so starting its menu-bar app here would only add an
+    // idle icon and occupy the service socket with this build.
     log("mac-computer-use \(macComputerUseVersion()) (mcp) starting. AX trusted: \(AXIsProcessTrusted()), ScreenRecording: \(CGPreflightScreenCaptureAccess())")
     OverlayController.shared.install()
     runStdinLoop()
