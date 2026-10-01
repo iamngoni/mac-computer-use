@@ -828,6 +828,8 @@ func elementFrameUnder(_ quartz: CGPoint) -> CGRect? {
     AXUIElementSetMessagingTimeout(app, 0.25)
     guard AXUIElementCopyElementAtPosition(app, Float(quartz.x), Float(quartz.y), &element) == .success,
           let element else { return nil }
+    // The timeout applies per object, so bound the frame reads as well.
+    AXUIElementSetMessagingTimeout(element, 0.25)
     return axFrame(element)
 }
 

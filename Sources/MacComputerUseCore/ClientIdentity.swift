@@ -195,10 +195,15 @@ func codeSigningSummary(forProcess pid: pid_t) -> CodeSigningSummary? {
 public func identifyServiceClient(peerProcess pid: pid_t) -> ServiceClientIdentity? {
     let responsible = responsibleProcessIdentifier(for: pid)
     guard let executable = executablePath(forProcess: responsible) else { return nil }
+    // Approvals are pinned to the client's code. Without a valid signature
+    // (every arm64 binary carries at least an ad-hoc one) there is nothing
+    // to pin to, so such a client is refused rather than re-asked forever.
+    guard let signing = codeSigningSummary(forProcess: responsible), signing.designatedRequirement != nil else {
+        return nil
+    }
     let bundlePath = outermostApplicationBundle(containingExecutable: executable)
     let bundle = bundlePath.flatMap { Bundle(path: $0) }
-    let signing = codeSigningSummary(forProcess: responsible)
-    let bundleIdentifier = bundle?.bundleIdentifier ?? signing?.signingIdentifier
+    let bundleIdentifier = bundle?.bundleIdentifier ?? signing.signingIdentifier
     let displayName: String = {
         for key in ["CFBundleDisplayName", "CFBundleName"] {
             if let value = bundle?.object(forInfoDictionaryKey: key) as? String,
@@ -214,18 +219,18 @@ public func identifyServiceClient(peerProcess pid: pid_t) -> ServiceClientIdenti
     let location = bundlePath ?? executable
     return ServiceClientIdentity(
         key: serviceClientApprovalKey(
-            teamIdentifier: signing?.teamIdentifier,
-            signingIdentifier: signing?.signingIdentifier,
+            teamIdentifier: signing.teamIdentifier,
+            signingIdentifier: signing.signingIdentifier,
             path: location,
-            teamVerified: signing?.teamVerified ?? false,
-            appleVerified: signing?.appleVerified ?? false
+            teamVerified: signing.teamVerified,
+            appleVerified: signing.appleVerified
         ),
         displayName: displayName,
         bundleIdentifier: bundleIdentifier,
-        teamIdentifier: (signing?.teamVerified ?? false) ? signing?.teamIdentifier : nil,
-        signer: (signing?.teamVerified ?? false) || (signing?.appleVerified ?? false) ? signing?.signer : nil,
+        teamIdentifier: signing.teamVerified ? signing.teamIdentifier : nil,
+        signer: signing.teamVerified || signing.appleVerified ? signing.signer : nil,
         path: location,
-        requirement: signing?.designatedRequirement,
+        requirement: signing.designatedRequirement,
         processIdentifier: responsible
     )
 }

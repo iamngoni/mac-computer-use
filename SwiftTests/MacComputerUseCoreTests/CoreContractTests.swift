@@ -93,7 +93,7 @@ final class CoreContractTests: XCTestCase {
         let suite = "mac-computer-use-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = ClientApprovalStore(defaults: defaults, signer: nil)
+        let store = ClientApprovalStore(defaults: defaults, anchor: nil)
         let identity = ServiceClientIdentity(
             key: "team:T:com.example", displayName: "Example", bundleIdentifier: "com.example",
             teamIdentifier: "T", signer: "Developer ID Application: Example (T)", path: "/Applications/Example.app",
@@ -102,7 +102,7 @@ final class CoreContractTests: XCTestCase {
         XCTAssertFalse(store.isApproved(identity.key))
         store.approve(identity)
         store.approve(identity)
-        XCTAssertTrue(ClientApprovalStore(defaults: defaults, signer: nil).isApproved(identity.key))
+        XCTAssertTrue(ClientApprovalStore(defaults: defaults, anchor: nil).isApproved(identity.key))
         XCTAssertEqual(store.clients.count, 1)
         XCTAssertEqual(store.clients.first?.detail, "Developer ID Application: Example (T)")
         // Approval also requires the client's code to still satisfy the stored requirement.
@@ -112,26 +112,34 @@ final class CoreContractTests: XCTestCase {
         XCTAssertFalse(store.isApproved(identity.key))
     }
 
-    func testSignedApprovalsIgnoreTamperedPreferences() throws {
-        struct FixedSigner: ApprovalSigner {
-            func signature(for data: Data) -> Data? { hmacSHA256(key: Data("k".utf8), data: data) }
+    func testAnchoredApprovalsIgnoreForgedOrRolledBackPreferences() throws {
+        final class MemoryAnchor: ApprovalAnchor {
+            var digest: Data?
+            func record(_ data: Data) { digest = sha256(data) }
+            func matches(_ data: Data) -> Bool { digest == sha256(data) }
         }
         let suite = "mac-computer-use-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = ClientApprovalStore(defaults: defaults, signer: FixedSigner())
-        let identity = ServiceClientIdentity(
-            key: "path:/a", displayName: "A", bundleIdentifier: nil, teamIdentifier: nil, signer: nil, path: "/a", requirement: "cdhash H\"00\""
-        )
-        store.approve(identity)
-        XCTAssertTrue(store.isApproved("path:/a"))
-        // Another process writes itself into the preferences without the key.
-        let forged = try JSONEncoder().encode([ApprovedServiceClient(
-            key: "path:/evil", displayName: "Evil", detail: "", approvedAt: Date(), requirement: nil
-        )])
-        defaults.set(forged, forKey: "approvedServiceClients")
-        XCTAssertFalse(store.isApproved("path:/evil"))
+        let store = ClientApprovalStore(defaults: defaults, anchor: MemoryAnchor())
+        func identity(_ path: String) -> ServiceClientIdentity {
+            ServiceClientIdentity(key: "path:\(path)", displayName: path, bundleIdentifier: nil, teamIdentifier: nil,
+                                  signer: nil, path: path, requirement: "cdhash H\"00\"")
+        }
+        store.approve(identity("/a"))
+        store.approve(identity("/b"))
+        let withB = try XCTUnwrap(defaults.data(forKey: "approvedServiceClients"))
+        store.revoke("path:/b")
+        XCTAssertFalse(store.isApproved("path:/b"))
+        // Writing the older list back would restore the revoked client.
+        defaults.set(withB, forKey: "approvedServiceClients")
+        XCTAssertFalse(store.isApproved("path:/b"))
         XCTAssertEqual(store.clients, [])
+        // A forged list is ignored the same way.
+        defaults.set(try JSONEncoder().encode([ApprovedServiceClient(
+            key: "path:/evil", displayName: "Evil", detail: "", approvedAt: Date(), requirement: nil
+        )]), forKey: "approvedServiceClients")
+        XCTAssertFalse(store.isApproved("path:/evil"))
     }
 
     func testTestAutoApprovalNeverAppliesToALaunchServicesService() {

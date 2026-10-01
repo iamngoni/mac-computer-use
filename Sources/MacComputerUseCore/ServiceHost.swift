@@ -24,56 +24,63 @@ public struct ApprovedServiceClient: Codable, Equatable {
     public let requirement: String?
 }
 
-/// Authenticates the stored approvals so another process cannot add itself
-/// by writing the app's preferences.
-public protocol ApprovalSigner {
-    func signature(for data: Data) -> Data?
+/// Pins the stored approvals so another process can neither add itself by
+/// writing the app's preferences nor restore an approval the user revoked.
+public protocol ApprovalAnchor {
+    /// Records the approvals that were just saved.
+    func record(_ data: Data)
+    /// True when `data` is exactly the approvals last recorded.
+    func matches(_ data: Data) -> Bool
 }
 
-/// HMAC-SHA256 with a random key kept in the login keychain, whose access
-/// list trusts only this app's code signature. Used for team-signed builds;
-/// ad-hoc development builds change identity on every rebuild, so they would
-/// prompt for keychain access after each one.
-public final class KeychainApprovalSigner: ApprovalSigner {
-    private let key: Data
-
-    public static func makeIfAvailable() -> KeychainApprovalSigner? {
-        guard currentProcessIsTeamSigned(), let key = loadOrCreateKey() else { return nil }
-        return KeychainApprovalSigner(key: key)
-    }
-
-    init(key: Data) { self.key = key }
-
-    public func signature(for data: Data) -> Data? {
-        hmacSHA256(key: key, data: data)
-    }
-
+/// Keeps a SHA-256 digest of the current approvals in the login keychain,
+/// whose access list trusts only this app's code signature. Used for
+/// team-signed builds; ad-hoc development builds change identity on every
+/// rebuild, so they would prompt for keychain access after each one.
+public final class KeychainApprovalAnchor: ApprovalAnchor {
     private static let service = "com.modestnerd.mac-computer-use.approvals"
-    private static let account = "approval-signing-key"
+    private static let account = "approvals-digest"
 
-    private static func loadOrCreateKey() -> Data? {
+    public static func makeIfAvailable() -> KeychainApprovalAnchor? {
+        currentProcessIsTeamSigned() ? KeychainApprovalAnchor() : nil
+    }
+
+    public func record(_ data: Data) {
+        let digest = sha256(data)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+        ]
+        let update: [String: Any] = [kSecValueData as String: digest]
+        if SecItemUpdate(query as CFDictionary, update as CFDictionary) == errSecItemNotFound {
+            var add = query
+            add[kSecValueData as String] = digest
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    public func matches(_ data: Data) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
             kSecReturnData as String: true,
         ]
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecSuccess, let data = item as? Data, data.count == 32 { return data }
-        guard status == errSecItemNotFound else { return nil }
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
-        let key = Data(bytes)
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: key,
-        ]
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess ? key : nil
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let stored = item as? Data else { return false }
+        return constantTimeEqual(stored, sha256(data))
     }
+}
+
+func sha256(_ data: Data) -> Data {
+    var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+    data.withUnsafeBytes { bytes in
+        _ = CC_SHA256(bytes.baseAddress, CC_LONG(data.count), &digest)
+    }
+    return Data(digest)
 }
 
 func currentProcessIsTeamSigned() -> Bool {
@@ -87,39 +94,25 @@ func currentProcessIsTeamSigned() -> Bool {
     return !((dictionary[kSecCodeInfoTeamIdentifier as String] as? String) ?? "").isEmpty
 }
 
-func hmacSHA256(key: Data, data: Data) -> Data {
-    var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    key.withUnsafeBytes { keyBytes in
-        data.withUnsafeBytes { dataBytes in
-            CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA256), keyBytes.baseAddress, key.count, dataBytes.baseAddress, data.count, &digest)
-        }
-    }
-    return Data(digest)
-}
-
 /// Clients the user has allowed to drive the Mac through the service.
 public final class ClientApprovalStore {
     private let defaults: UserDefaults
-    private let signer: ApprovalSigner?
+    private let anchor: ApprovalAnchor?
     private let defaultsKey = "approvedServiceClients"
-    private let signatureKey = "approvedServiceClientsSignature"
 
-    public init(defaults: UserDefaults = .standard, signer: ApprovalSigner? = KeychainApprovalSigner.makeIfAvailable()) {
+    public init(defaults: UserDefaults = .standard, anchor: ApprovalAnchor? = KeychainApprovalAnchor.makeIfAvailable()) {
         self.defaults = defaults
-        self.signer = signer
+        self.anchor = anchor
     }
 
-    /// Approved clients. With a signer, tampered or unsigned data reads as
-    /// no approvals, so the user is simply asked again.
+    /// Approved clients. With an anchor, data that is not exactly what the
+    /// app last saved (forged or rolled back) reads as no approvals, so the
+    /// user is simply asked again.
     public var clients: [ApprovedServiceClient] {
         guard let data = defaults.data(forKey: defaultsKey) else { return [] }
-        if let signer {
-            guard let stored = defaults.data(forKey: signatureKey),
-                  let expected = signer.signature(for: data),
-                  constantTimeEqual(stored, expected) else {
-                log("ignoring approved clients whose signature does not match")
-                return []
-            }
+        if let anchor, !anchor.matches(data) {
+            log("ignoring approved clients that this app did not save")
+            return []
         }
         return (try? JSONDecoder().decode([ApprovedServiceClient].self, from: data)) ?? []
     }
@@ -154,10 +147,8 @@ public final class ClientApprovalStore {
 
     private func save(_ clients: [ApprovedServiceClient]) {
         guard let data = try? JSONEncoder().encode(clients) else { return }
+        anchor?.record(data)
         defaults.set(data, forKey: defaultsKey)
-        if let signer, let signature = signer.signature(for: data) {
-            defaults.set(signature, forKey: signatureKey)
-        }
     }
 }
 
@@ -650,7 +641,7 @@ public final class ServiceHost {
         guard let identity = identifyServiceClient(peerProcess: peer) else {
             writeAll(connection, encodeJSONLine([
                 "maccu_service": 1, "accepted": false,
-                "error": "Mac Computer Use could not identify the app that started this connection.",
+                "error": "Mac Computer Use could not identify or verify the code signature of the app that started this connection.",
             ]))
             close(connection)
             return

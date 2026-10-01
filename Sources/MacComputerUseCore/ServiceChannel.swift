@@ -117,15 +117,17 @@ final class JSONLineChannel: @unchecked Sendable {
         onClose: @escaping () -> Void
     ) {
         let reader = LineReader(descriptor: descriptor)
-        let thread = Thread { [weak self] in
+        // The thread holds the channel until end of file, so the descriptor
+        // is always closed even if every other reference is already gone.
+        let thread = Thread { [self] in
             while let line = reader.readLine() {
                 autoreleasepool {
                     if let message = decodeJSONLine(line) { onMessage(message) }
                 }
             }
-            self?.markClosed()
+            markClosed()
             onClose()
-            self?.closeDescriptor()
+            closeDescriptor()
         }
         thread.name = "mac-computer-use.channel"
         thread.start()
