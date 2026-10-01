@@ -168,7 +168,8 @@ final class MCPRelay: @unchecked Sendable {
                 setReason(.launchFailed(failure))
                 return nil
             }
-            let deadline = Date().addingTimeInterval(15)
+            // An isolated runtime's service is started by its owner, never by us.
+            let deadline = Date().addingTimeInterval(MacComputerUseRuntime.isOverridden(environment: environment) ? 3 : 15)
             while candidate == nil, Date() < deadline {
                 if MacComputerUseRuntime.userStoppedService(environment: environment) {
                     setReason(.stoppedByUser)
@@ -179,7 +180,7 @@ final class MCPRelay: @unchecked Sendable {
             }
         }
         guard let connection = candidate else {
-            setReason(.launchFailed("the service did not start listening within 15 seconds"))
+            setReason(.launchFailed("the service did not start listening in time"))
             return nil
         }
         guard socketPeerIsCurrentUser(connection), socketPeerSharesCurrentCodeIdentity(connection) else {
