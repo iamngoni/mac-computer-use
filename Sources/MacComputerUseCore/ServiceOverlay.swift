@@ -543,6 +543,118 @@ final class ChoicePrompt: NSObject {
     }
 }
 
+/// Asks the person whether a client app may use Mac Computer Use. A
+/// non-activating panel whose buttons ignore synthesised clicks, so no agent
+/// (approved or not) can grant itself or another client access.
+@MainActor
+final class ApprovalPrompt: NSObject {
+    let panel: InteractivePanel
+    private let completion: (Bool) -> Void
+    private var finished = false
+
+    init(identity: ServiceClientIdentity, completion: @escaping (Bool) -> Void) {
+        self.completion = completion
+        panel = InteractivePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 200),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .screenSaver
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        panel.sharingType = .none
+
+        let background = NSVisualEffectView()
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 16
+        background.layer?.masksToBounds = true
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.spacing = 10
+        let icon = NSImageView(image: NSWorkspace.shared.icon(forFile: identity.path))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        header.addArrangedSubview(icon)
+        let title = NSTextField(wrappingLabelWithString: "Allow “\(identity.displayName)” to control your Mac?")
+        title.font = .systemFont(ofSize: 14, weight: .semibold)
+        title.preferredMaxLayoutWidth = 320
+        header.addArrangedSubview(title)
+        stack.addArrangedSubview(header)
+        let body = NSTextField(wrappingLabelWithString: "It will see and operate apps through Mac Computer Use, using the Accessibility and Screen Recording access you gave Mac Computer Use. You can remove it later in Setup.")
+        body.font = .systemFont(ofSize: 12)
+        body.textColor = .secondaryLabelColor
+        body.preferredMaxLayoutWidth = 370
+        stack.addArrangedSubview(body)
+        let detail = NSTextField(labelWithString: "Identified as: \(identity.detail)")
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .tertiaryLabelColor
+        detail.lineBreakMode = .byTruncatingMiddle
+        detail.preferredMaxLayoutWidth = 370
+        stack.addArrangedSubview(detail)
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        let deny = NSButton(title: "Don’t Allow", target: self, action: #selector(denyClicked))
+        deny.bezelStyle = .rounded
+        let allow = NSButton(title: "Allow", target: self, action: #selector(allowClicked))
+        allow.bezelStyle = .rounded
+        buttons.addArrangedSubview(deny)
+        buttons.addArrangedSubview(allow)
+        stack.addArrangedSubview(buttons)
+        background.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
+        ])
+        panel.contentView = background
+        let fitting = background.fittingSize
+        panel.setContentSize(NSSize(width: max(fitting.width, 380), height: fitting.height))
+        if let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
+            panel.setFrameOrigin(CGPoint(
+                x: visible.midX - panel.frame.width / 2,
+                y: visible.midY + visible.height / 6
+            ))
+        }
+        panel.orderFrontRegardless()
+    }
+
+    @objc private func allowClicked() {
+        guard !eventIsAgentSynthesised(NSApp.currentEvent) else { return }
+        finish(true)
+    }
+
+    @objc private func denyClicked() {
+        guard !eventIsAgentSynthesised(NSApp.currentEvent) else { return }
+        finish(false)
+    }
+
+    func finish(_ allowed: Bool) {
+        guard !finished else { return }
+        finished = true
+        panel.orderOut(nil)
+        completion(allowed)
+    }
+}
+
 /// Pick mode: the person's next click (or several, then Done) is captured
 /// and returned to the agent instead of reaching the app underneath.
 @MainActor

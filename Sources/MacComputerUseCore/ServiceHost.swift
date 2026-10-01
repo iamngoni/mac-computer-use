@@ -231,7 +231,6 @@ public final class ServiceHost {
     private var acceptingConnections = false
     private var deniedThisRun = Set<String>()
     private var promptQueue: [ServiceClientIdentity] = []
-    private var isPrompting = false
     private var keyMonitors: [Any] = []
     private var refreshScheduled = false
     private var interactions: [ActiveInteraction] = []
@@ -840,36 +839,17 @@ public final class ServiceHost {
         presentNextPrompt()
     }
 
+    private var approvalPrompt: ApprovalPrompt?
+
     private func presentNextPrompt() {
-        guard !isPrompting, !promptQueue.isEmpty else { return }
-        isPrompting = true
+        guard approvalPrompt == nil, !promptQueue.isEmpty else { return }
         let identity = promptQueue.removeFirst()
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                let allowed = self.askUserToApprove(identity)
-                self.decide(identity, allowed: allowed)
-                self.isPrompting = false
-                self.presentNextPrompt()
-            }
+        approvalPrompt = ApprovalPrompt(identity: identity) { [weak self] allowed in
+            guard let self else { return }
+            self.approvalPrompt = nil
+            self.decide(identity, allowed: allowed)
+            self.presentNextPrompt()
         }
-    }
-
-    private func askUserToApprove(_ identity: ServiceClientIdentity) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Allow “\(identity.displayName)” to control your Mac?"
-        alert.informativeText = """
-        \(identity.displayName) wants to use Mac Computer Use to see and operate apps on this Mac, using the Accessibility and Screen Recording access you gave Mac Computer Use.
-
-        Identified as: \(identity.detail)
-
-        You can remove this later in Mac Computer Use Setup.
-        """
-        alert.addButton(withTitle: "Allow")
-        alert.addButton(withTitle: "Don’t Allow")
-        alert.buttons.last?.keyEquivalent = "\u{1b}"
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func decide(_ identity: ServiceClientIdentity, allowed: Bool) {
