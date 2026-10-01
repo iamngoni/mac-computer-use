@@ -67,7 +67,7 @@ func toolHealthReport() -> [String: Any] {
         "resolution": resolutionHealth(),
         "input": [
             "default_scope": "application_scoped",
-            "global_pointer_opt_in": "disabled",
+            "global_pointer_opt_in": "allow_global_input",
             "hardware_pointer_moves_by_default": false,
         ],
     ]

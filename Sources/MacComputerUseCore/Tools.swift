@@ -484,6 +484,57 @@ func toolDefinitions() -> [ToolDefinition] {
             handler: toolGetAppState
         ),
         ToolDefinition(
+            name: "get_desktop_state",
+            description: "Capture one display and return a fresh snapshot token plus indexed visible menu/status accessibility elements. Desktop coordinates are screenshot pixels relative to the selected display.",
+            inputSchema: obj(
+                [
+                    "display_id": [
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional active CGDirectDisplayID. Omit to use the main display.",
+                    ],
+                ],
+                []
+            ),
+            handler: toolGetDesktopState
+        ),
+        ToolDefinition(
+            name: "desktop_click",
+            description: "Explicitly click the desktop or a visible indexed menu/status element. This is the only global HID input path and requires allow_global_input: true. Use either element_index or screenshot-pixel x,y, never both.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "snapshot_id": ["type": "string", "minLength": 1],
+                    "element_index": ["type": "integer", "minimum": 0],
+                    "x": screenshotCoordinate,
+                    "y": screenshotCoordinate,
+                    "mouse_button": ["type": "string", "enum": ["left", "right", "middle"]],
+                    "click_count": ["type": "integer", "minimum": 1, "maximum": 3],
+                    "allow_global_input": ["type": "boolean", "const": true],
+                ],
+                "required": ["snapshot_id", "allow_global_input"],
+                "oneOf": [
+                    ["required": ["element_index"]],
+                    ["required": ["x", "y"]],
+                ],
+                "additionalProperties": false,
+            ],
+            handler: toolDesktopClick
+        ),
+        ToolDefinition(
+            name: "desktop_press_key",
+            description: "Explicitly press a key or combo through global HID input. Requires a fresh get_desktop_state snapshot and allow_global_input: true.",
+            inputSchema: obj(
+                [
+                    "snapshot_id": ["type": "string", "minLength": 1],
+                    "key": string,
+                    "allow_global_input": ["type": "boolean", "const": true],
+                ],
+                ["snapshot_id", "key", "allow_global_input"]
+            ),
+            handler: toolDesktopPressKey
+        ),
+        ToolDefinition(
             name: "click",
             description: "Click by element_index (from get_app_state) or by x,y. Coordinates are in SCREENSHOT PIXELS — read them straight off the get_app_state image or its tree, not global screen points. Shows a live cursor + click flash.",
             inputSchema: obj(

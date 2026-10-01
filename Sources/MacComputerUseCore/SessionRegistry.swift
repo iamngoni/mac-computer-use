@@ -7,6 +7,7 @@ private let updateGateName = "mac-computer-use-update-gate.lock"
 private let updateMarkerName = "mac-computer-use-update-in-progress.json"
 private let managerLockName = "mac-computer-use-manager.lock"
 private let managerMarkerName = "mac-computer-use-manager.json"
+private let globalInputLockName = "mac-computer-use-global-input.lock"
 
 public enum MacComputerUseLaunchMode: Equatable {
     case manager
@@ -74,6 +75,42 @@ public final class MCPProcessSessionLease {
         flock(descriptor, LOCK_UN)
         close(descriptor)
     }
+}
+
+/// A process-wide, nonblocking lease for the only APIs that can affect the
+/// user's hardware pointer and the currently focused application. Application-
+/// scoped events do not need this lease because they are delivered with
+/// `postToPid`.
+public final class GlobalInputLease {
+    private var descriptor: Int32?
+
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    public static func acquire(
+        in temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    ) -> GlobalInputLease? {
+        let lockURL = temporaryDirectory.appendingPathComponent(globalInputLockName)
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return nil }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        return GlobalInputLease(descriptor: descriptor)
+    }
+
+    /// Release explicitly so callers can guarantee the lease is relinquished
+    /// with `defer`, even when an action fails part-way through.
+    public func release() {
+        guard let descriptor else { return }
+        self.descriptor = nil
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+
+    deinit { release() }
 }
 
 public final class ManagerProcessLease {

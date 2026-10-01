@@ -19,6 +19,9 @@ UNBUNDLED_BINARY = REPO_ROOT / ".build/debug/mac-computer-use"
 EXPECTED_TOOLS = [
     "list_apps",
     "get_app_state",
+    "get_desktop_state",
+    "desktop_click",
+    "desktop_press_key",
     "click",
     "type_text",
     "press_key",
@@ -52,7 +55,7 @@ class MCPContractTests(unittest.TestCase):
     def test_server_metadata_and_tools(self) -> None:
         initialized = self.client.initialize_response["result"]
         self.assertEqual("mac-computer-use", initialized["serverInfo"]["name"])
-        self.assertEqual("0.7.0", initialized["serverInfo"]["version"])
+        self.assertEqual("0.8.0", initialized["serverInfo"]["version"])
 
         response = self.client.request("tools/list", {})
         names = [tool["name"] for tool in response["result"]["tools"]]
@@ -134,7 +137,7 @@ class MCPContractTests(unittest.TestCase):
         self.assertEqual(
             "com.modestnerd.mac-computer-use", report["bundle"]["identifier"]
         )
-        self.assertEqual("0.7.0", report["bundle"]["version"])
+        self.assertEqual("0.8.0", report["bundle"]["version"])
         self.assertIsInstance(report["overlay"]["launch_requested"], bool)
         self.assertIsInstance(report["overlay"]["state_file_present"], bool)
         self.assertEqual("not_requested", report["overlay"]["status"])
@@ -155,7 +158,7 @@ class MCPContractTests(unittest.TestCase):
             report["resolution"]["exact_ax_window_id_available"], bool
         )
         self.assertEqual("application_scoped", report["input"]["default_scope"])
-        self.assertEqual("disabled", report["input"]["global_pointer_opt_in"])
+        self.assertEqual("allow_global_input", report["input"]["global_pointer_opt_in"])
 
     def test_overlay_ipc_paths_are_isolated_and_lazy(self) -> None:
         first_report = json.loads(text_content(self.client.call_tool("health_report")))

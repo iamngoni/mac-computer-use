@@ -133,6 +133,9 @@ final class CoreContractTests: XCTestCase {
             [
                 "list_apps",
                 "get_app_state",
+                "get_desktop_state",
+                "desktop_click",
+                "desktop_press_key",
                 "click",
                 "type_text",
                 "press_key",
@@ -172,6 +175,49 @@ final class CoreContractTests: XCTestCase {
         let methods = try XCTUnwrap(method["enum"] as? [String])
 
         XCTAssertFalse(methods.contains("global"))
+    }
+
+    func testDesktopSchemasRequireExplicitGlobalInputAndUseAnExclusiveTargetShape() throws {
+        let click = try XCTUnwrap(toolSchemas().first { $0["name"] as? String == "desktop_click" })
+        let input = try XCTUnwrap(click["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(input["properties"] as? [String: Any])
+        let permission = try XCTUnwrap(properties["allow_global_input"] as? [String: Any])
+        XCTAssertEqual(permission["const"] as? Bool, true)
+        XCTAssertEqual(
+            desktopActionShapeIsValid(["element_index": 1]),
+            true
+        )
+        XCTAssertEqual(
+            desktopActionShapeIsValid(["x": 10.0, "y": 20.0]),
+            true
+        )
+        XCTAssertFalse(
+            desktopActionShapeIsValid(["element_index": 1, "x": 10.0, "y": 20.0])
+        )
+        XCTAssertFalse(desktopActionShapeIsValid(["x": 10.0]))
+    }
+
+    func testGlobalInputLeaseIsNonBlockingAndReleasesAfterFailurePath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "maccu-global-input-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var first: GlobalInputLease? = GlobalInputLease.acquire(in: root)
+        XCTAssertNotNil(first)
+        XCTAssertNil(GlobalInputLease.acquire(in: root))
+        first?.release()
+        first = nil
+        XCTAssertNotNil(GlobalInputLease.acquire(in: root))
+    }
+
+    func testDesktopKeyValidationRejectsUnknownModifiersAndKeys() {
+        XCTAssertTrue(desktopKeySpecIsKnown("cmd+shift+left"))
+        XCTAssertTrue(desktopKeySpecIsKnown("Return"))
+        XCTAssertFalse(desktopKeySpecIsKnown("fn+left"))
+        XCTAssertFalse(desktopKeySpecIsKnown("not-a-key"))
     }
 
     func testQuartzToCocoaConversionSupportsDisplaysAroundPrimary() {

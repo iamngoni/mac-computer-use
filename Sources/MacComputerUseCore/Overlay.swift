@@ -1100,7 +1100,12 @@ func runOverlayAgent(
     }
 
     let keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { ev in
-        if ev.keyCode == 53 { FileManager.default.createFile(atPath: cancelPath, contents: nil) }
+        // A desktop_press_key Escape is an intentional global action. Only a
+        // physical Escape should cancel the currently running automation.
+        if ev.keyCode == 53,
+           ev.cgEvent?.getIntegerValueField(.eventSourceUserData) != desktopSyntheticEventUserData {
+            FileManager.default.createFile(atPath: cancelPath, contents: nil)
+        }
     }
 
     let screenObserver = NotificationCenter.default.addObserver(

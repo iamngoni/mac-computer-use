@@ -21,6 +21,7 @@ It is a native Swift app with no Python, Node, or runtime package-manager depend
 - **Bounded screenshots.** Captures go through ScreenCaptureKit as in-memory images and are rescaled to fit a size budget, so a Retina window doesn't dump multiple megabytes of base64 into the model's context.
 - **Reliable browser navigation.** `navigate` sets a Safari or Chromium tab URL through AppleScript without omnibox typing.
 - **Visible, cancellable control.** A separate agent process draws the persistent automation cursor, transient action banner, click feedback, and an Esc-to-cancel affordance. The overlay does not appear in captures.
+- **Explicit desktop control.** `get_desktop_state` captures a selected display on macOS 14+, returns a snapshot token, and indexes visible menu/status elements with their owning process IDs. `desktop_click` and `desktop_press_key` require `allow_global_input: true`, validate that token, and serialize global HID input so unrelated MCP sessions cannot race the hardware pointer.
 
 ## Tools
 
@@ -29,6 +30,9 @@ It is a native Swift app with no Python, Node, or runtime package-manager depend
 | `list_apps` | List running applications (name, bundle id, pid). |
 | `list_windows` | List stable WindowServer IDs, process IDs, titles, bounds, and front-to-back order. |
 | `get_app_state` | Inspect an app without activation. Returns an exact-window screenshot and indexed accessibility tree. Accepts `window_id`. Call it before interacting. |
+| `get_desktop_state` | Capture the main display (or an active `display_id`) on macOS 14+, returning a screenshot, snapshot token, and indexed visible menu/status elements with owner PIDs. |
+| `desktop_click` | Explicit global desktop click by a fresh `snapshot_id` and screenshot-pixel `x,y`, or by an indexed menu/status element. Requires `allow_global_input: true`; rejects stale tokens and mixed/out-of-bounds targets. |
+| `desktop_press_key` | Explicit global HID key/combo press against a fresh desktop snapshot. Requires `allow_global_input: true`. |
 | `click` | Click by `element_index` (prefers background `AXPress`) or by `x,y` in screenshot pixels. Supports `click_count`, `mouse_button`, and `click_method` (see below). |
 | `type_text` | Type text. Uses real keycodes (accepted by fields that ignore unicode injection); can focus a target `element_index` first. |
 | `press_key` | Press a key/combo, xdotool-style: `Return`, `Tab`, `cmd+c`, `cmd+t`, `Up`, … |
@@ -57,9 +61,13 @@ It is a native Swift app with no Python, Node, or runtime package-manager depend
 
 `sky_click` is not reachable from `auto`. It uses an undocumented application binary interface (ABI), so it returns an explicit error instead of falling back to a focus-stealing path. The server does not expose a system Human Interface Device (HID) pointer mode.
 
+Desktop control is the deliberate exception: it is opt-in per call with `allow_global_input: true`, requires a fresh `get_desktop_state` token, and uses the global HID event tap. Indexed menu/status clicks try the recorded element's `AXPress` action first, then use the validated display coordinate if AXPress is unavailable. Synthetic desktop Escape events are tagged so they do not trigger the overlay's physical-Esc cancellation monitor.
+
 ## Coordinates
 
 `get_app_state` reports the screenshot's pixel size. Every tree coordinate and every `x,y` accepted by `click` and `drag` uses that screenshot-pixel space. `click`, `scroll`, and `drag` reject calls without a matching, current snapshot. Window-management coordinates are separate: `list_windows` reports global screen-point bounds and `set_window_frame` accepts global screen-point `x,y,width,height`.
+
+`get_desktop_state` reports a display screenshot's pixel size and a fresh `snapshot_id`. Desktop `x,y` values are pixels relative to that display, not global screen points. `desktop_click` rejects an old token, an inactive/moved display, coordinates outside the captured display, or a request that supplies both an element index and coordinates.
 
 ## Architecture
 
@@ -134,7 +142,8 @@ Fork pull-request code does not run on the self-hosted runner. Neither workflow 
 Grant these to **MacComputerUse.app** in *System Settings → Privacy & Security*:
 
 - **Accessibility**: read the user interface tree and synthesize app-scoped input
-- **Screen Recording**: capture window screenshots through ScreenCaptureKit on macOS 14 or later, with a `screencapture` fallback on older systems
+- **Screen Recording**: capture window screenshots through ScreenCaptureKit on macOS 14 or later, with a `screencapture` fallback on older systems; desktop capture requires macOS 14 or later
+- **Input Monitoring / Accessibility**: desktop control posts only after the caller explicitly supplies `allow_global_input: true`; macOS may require the app's Accessibility/Input Monitoring permission for global HID delivery
 - **Automation**: script Safari or Chromium for `navigate`; macOS grants this permission per target app
 
 Grant Accessibility and Screen Recording to the fixed installed bundle path before running GUI integration. The `maccu-tcc` runner label belongs only on a logged-in runner with those Transparency, Consent, and Control (TCC) grants.
