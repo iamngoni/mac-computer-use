@@ -12,11 +12,14 @@ final class SetupWindowController: NSWindowController {
     private let screenRecordingStatus = NSTextField(labelWithString: "Checking…")
     private let launchAtLoginSwitch = NSSwitch()
     private let installationStatus = NSTextField(labelWithString: "")
+    private let allowedClientsStack = NSStackView()
+    private weak var serviceHost: ServiceHost?
 
-    init(executableURL: URL) {
+    init(executableURL: URL, serviceHost: ServiceHost? = nil) {
         registrationService = MCPClientRegistrationService(serverExecutableURL: executableURL)
+        self.serviceHost = serviceHost
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 510),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 600),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -59,7 +62,7 @@ final class SetupWindowController: NSWindowController {
 
         let header = NSTextField(wrappingLabelWithString: "Control your Mac, visibly and on your terms.")
         header.font = .systemFont(ofSize: 24, weight: .semibold)
-        let intro = NSTextField(wrappingLabelWithString: "Grant the two macOS permissions, then connect the clients you use. You can return here from the menu bar at any time.")
+        let intro = NSTextField(wrappingLabelWithString: "Grant the two macOS permissions to Mac Computer Use once, then connect the clients you use. Clients work through Mac Computer Use, so they never need these permissions themselves.")
         intro.textColor = .secondaryLabelColor
         intro.maximumNumberOfLines = 2
         root.addArrangedSubview(header)
@@ -97,6 +100,12 @@ final class SetupWindowController: NSWindowController {
             root.setCustomSpacing(8, after: row.view)
         }
 
+        root.addArrangedSubview(sectionTitle("Allowed apps"))
+        allowedClientsStack.orientation = .vertical
+        allowedClientsStack.alignment = .leading
+        allowedClientsStack.spacing = 6
+        root.addArrangedSubview(allowedClientsStack)
+
         root.addArrangedSubview(sectionTitle("Background service"))
         let loginRow = horizontalRow()
         let loginText = NSTextField(wrappingLabelWithString: "Open the menu-bar manager when you sign in")
@@ -122,6 +131,51 @@ final class SetupWindowController: NSWindowController {
         refreshPermissions()
         refreshLaunchAtLogin()
         refreshClients()
+        refreshAllowedClients()
+    }
+
+    func refreshClientsIfVisible() {
+        guard window?.isVisible == true else { return }
+        refreshAllowedClients()
+    }
+
+    private func refreshAllowedClients() {
+        for view in allowedClientsStack.arrangedSubviews {
+            allowedClientsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let clients = serviceHost?.approvedClients ?? []
+        guard !clients.isEmpty else {
+            let empty = NSTextField(wrappingLabelWithString: "No apps yet. The first time a client such as Claude Code or Codex acts, Mac Computer Use asks whether to allow it.")
+            empty.textColor = .secondaryLabelColor
+            allowedClientsStack.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: allowedClientsStack.widthAnchor).isActive = true
+            return
+        }
+        for client in clients.sorted(by: { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }) {
+            let row = horizontalRow()
+            let name = NSTextField(labelWithString: client.displayName)
+            name.font = .systemFont(ofSize: 13, weight: .medium)
+            let detail = NSTextField(labelWithString: client.detail)
+            detail.textColor = .secondaryLabelColor
+            detail.lineBreakMode = .byTruncatingMiddle
+            detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let remove = RevokeButton(title: "Remove", target: self, action: #selector(revokeClient(_:)))
+            remove.bezelStyle = .rounded
+            remove.clientKey = client.key
+            row.addArrangedSubview(name)
+            row.addArrangedSubview(detail)
+            row.addArrangedSubview(remove)
+            allowedClientsStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: allowedClientsStack.widthAnchor).isActive = true
+        }
+    }
+
+    @objc private func revokeClient(_ sender: RevokeButton) {
+        guard let key = sender.clientKey else { return }
+        serviceHost?.revokeClient(key)
+        refreshAllowedClients()
     }
 
     private func refreshPermissions() {
@@ -254,6 +308,10 @@ final class SetupWindowController: NSWindowController {
         control.bezelStyle = .rounded
         return control
     }
+}
+
+private final class RevokeButton: NSButton {
+    var clientKey: String?
 }
 
 @MainActor

@@ -6,6 +6,10 @@ switch macComputerUseLaunchMode(
 ) {
 case .manager:
     MainActor.assumeIsolated { runMacComputerUseManager() }
-case .mcp, .overlay:
+case .mcp:
+    runMacComputerUseMCP()
+case .worker:
+    runMacComputerUseWorker()
+case .overlay:
     runMacComputerUseService()
 }

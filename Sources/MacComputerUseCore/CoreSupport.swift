@@ -57,11 +57,13 @@ func strictJSONBoolean(_ value: Any?) -> Bool? {
 }
 
 func toJSON(_ obj: Any) -> Data { (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8) }
-let stdoutHandle = FileHandle.standardOutput
 let stdoutLock = NSLock()
 func writeMessage(_ obj: [String: Any]) {
     var data = toJSON(obj); data.append(0x0A)
-    stdoutLock.lock(); stdoutHandle.write(data); stdoutLock.unlock()
+    stdoutLock.lock()
+    let delivered = writeAll(STDOUT_FILENO, data)
+    stdoutLock.unlock()
+    if !delivered { exit(0) } // the client or relay is gone
 }
 func resultMsg(_ id: Any?, _ result: Any) {
     var m: [String: Any] = ["jsonrpc": "2.0", "result": result]; if let id = id { m["id"] = id }; writeMessage(m)

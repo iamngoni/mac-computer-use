@@ -20,6 +20,114 @@ final class CoreContractTests: XCTestCase {
             macComputerUseLaunchMode(arguments: ["mac-computer-use", "overlay"], standardInputIsPipe: false),
             .overlay
         )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "worker", "--session", "x"], standardInputIsPipe: true),
+            .worker
+        )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "manager", "--background"], standardInputIsPipe: true),
+            .manager
+        )
+    }
+
+    func testMCPRunsInProcessOnlyOutsideTheAppOrWhenAskedTo() {
+        let app = URL(fileURLWithPath: "/Applications/MacComputerUse.app")
+        let loose = URL(fileURLWithPath: "/tmp/build/debug")
+        XCTAssertFalse(mcpShouldRunInProcess(arguments: ["x", "mcp"], environment: [:], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x", "mcp", "--in-process"], environment: [:], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: ["MACCU_IN_PROCESS": "1"], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: ["MACCU_DISABLE_MANAGER": "1"], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: [:], bundleURL: loose))
+    }
+
+    func testRelayAnswersLocallyWhileTheServiceIsOff() throws {
+        let call: [String: Any] = ["jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": ["name": "list_apps"]]
+        let stopped = try XCTUnwrap(relayLocalReply(to: call, reason: .stoppedByUser))
+        let result = try XCTUnwrap(stopped["result"] as? [String: Any])
+        XCTAssertEqual(result["isError"] as? Bool, true)
+        XCTAssertTrue((toolResultText(result) ?? "").hasPrefix("[stopped_by_user]"))
+
+        let list = try XCTUnwrap(relayLocalReply(to: ["id": 8, "method": "tools/list"], reason: .updating))
+        let tools = try XCTUnwrap((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, toolSchemas().count)
+
+        XCTAssertNil(relayLocalReply(to: ["method": "notifications/initialized"], reason: .updating))
+
+        let disconnected = relayDisconnectedReply(id: "a", method: "tools/call")
+        let disconnectedResult = try XCTUnwrap(disconnected["result"] as? [String: Any])
+        XCTAssertTrue((toolResultText(disconnectedResult) ?? "").hasPrefix("[service_disconnected]"))
+        XCTAssertNotNil(relayDisconnectedReply(id: 3, method: "ping")["error"])
+    }
+
+    func testClientIdentityKeysSurviveUpdatesButPinUnsignedClients() {
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/A/App.app"),
+            "team:TEAM123:com.example.app"
+        )
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app"),
+            "apple:com.apple.Terminal"
+        )
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "a.out-1234", path: "/Users/me/tool"),
+            "path:/Users/me/tool"
+        )
+        XCTAssertEqual(
+            outermostApplicationBundle(containingExecutable: "/Applications/Host.app/Contents/Frameworks/Host Helper.app/Contents/MacOS/Host Helper"),
+            "/Applications/Host.app"
+        )
+        XCTAssertNil(outermostApplicationBundle(containingExecutable: "/usr/local/bin/node"))
+    }
+
+    func testClientApprovalsPersistAndCanBeRevoked() throws {
+        let suite = "mac-computer-use-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ClientApprovalStore(defaults: defaults)
+        let identity = ServiceClientIdentity(
+            key: "team:T:com.example", displayName: "Example", bundleIdentifier: "com.example",
+            teamIdentifier: "T", signer: "Developer ID Application: Example (T)", path: "/Applications/Example.app"
+        )
+        XCTAssertFalse(store.isApproved(identity.key))
+        store.approve(identity)
+        store.approve(identity)
+        XCTAssertTrue(ClientApprovalStore(defaults: defaults).isApproved(identity.key))
+        XCTAssertEqual(store.clients.count, 1)
+        XCTAssertEqual(store.clients.first?.detail, "Developer ID Application: Example (T)")
+        store.revoke(identity.key)
+        XCTAssertFalse(store.isApproved(identity.key))
+    }
+
+    func testRuntimeDirectoryHonoursOverrideAndKeepsSocketPathShort() {
+        let overridden = MacComputerUseRuntime.directory(environment: ["MACCU_RUNTIME_DIR": "/tmp/x"])
+        XCTAssertEqual(overridden.path, "/tmp/x")
+        XCTAssertEqual(
+            MacComputerUseRuntime.stoppedMarkerURL(environment: ["MACCU_RUNTIME_DIR": "/tmp/x"]).path,
+            "/tmp/x/stopped-by-user"
+        )
+        let socket = MacComputerUseRuntime.socketURL(environment: [:]).path
+        XCTAssertLessThan(socket.utf8.count, 104, socket)
+        XCTAssertTrue(socket.hasSuffix("com.modestnerd.mac-computer-use/service.sock"))
+    }
+
+    func testLineReaderSplitsLinesAcrossReads() throws {
+        var pair: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[0]); close(pair[1]) }
+        let big = String(repeating: "x", count: 200_000)
+        let writer = pair[1]
+        let written = expectation(description: "written")
+        // The payload exceeds the socket buffer, so write while the reader drains.
+        DispatchQueue.global().async {
+            _ = writeAll(writer, Data("{\"a\":1}\n{\"b\":\"".utf8))
+            _ = writeAll(writer, Data((big + "\"}\n").utf8))
+            written.fulfill()
+        }
+        let reader = LineReader(descriptor: pair[0])
+        XCTAssertEqual(decodeJSONLine(try XCTUnwrap(reader.readLine(timeout: 1)))?["a"] as? Int, 1)
+        XCTAssertEqual((decodeJSONLine(try XCTUnwrap(reader.readLine(timeout: 1)))?["b"] as? String)?.count, big.count)
+        XCTAssertNil(reader.readLine(timeout: 0.05))
+        wait(for: [written], timeout: 5)
     }
 
     func testUpdateGateWaitsForSessionsAndBlocksNewOnesThroughInstallerHandoff() throws {
@@ -432,70 +540,38 @@ final class CoreContractTests: XCTestCase {
         XCTAssertEqual(presentation.controlledAppTitles, ["Safari"])
     }
 
-    func testActiveOverlayAppsAggregateOnlyLiveValidatedSessions() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "maccu-menu-test-\(UUID().uuidString)",
-            isDirectory: true
+    func testIdleSessionsNeverLookActiveAndClientsGroupHonestly() {
+        let summary = { (id: String, name: String, approval: String) in
+            ServiceSessionSummary(
+                id: id, clientName: name, clientKey: "k-" + name, reportedClientName: nil,
+                approval: approval, busy: false, currentApp: nil, active: false
+            )
+        }
+        XCTAssertEqual(
+            connectedClientTitles([
+                summary("1", "claude", "approved"),
+                summary("2", "claude", "approved"),
+                summary("3", "ChatGPT", "pending"),
+            ]),
+            ["ChatGPT (not allowed yet)", "claude · 2 sessions"]
         )
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(connectedClientTitles([]), [])
+    }
 
-        func writeSession(
-            ownerPID: Int,
-            agentPID: Int,
-            channelID: String,
-            apps: [String],
-            controlling: Bool = true,
-            lingerUntil: Double = 0
-        ) throws {
-            let directory = root.appendingPathComponent(
-                "mac-computer-use-overlay-\(ownerPID)-\(channelID)",
-                isDirectory: true
-            )
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-            let ready: [String: Any] = [
-                "owner_pid": ownerPID,
-                "agent_pid": agentPID,
-                "channel_id": channelID,
-            ]
-            let state: [String: Any] = [
-                "pid": ownerPID,
-                "controlled_apps": apps,
-                "current_app": apps.first ?? "",
-                "controlling": controlling,
-                "lingerUntil": lingerUntil,
-            ]
-            try JSONSerialization.data(withJSONObject: ready).write(
-                to: directory.appendingPathComponent("ready.json")
-            )
-            try JSONSerialization.data(withJSONObject: state).write(
-                to: directory.appendingPathComponent("state.json")
-            )
-        }
+    func testCursorFadesOutOnlyAfterTheIdleDelay() {
+        XCTAssertEqual(cursorIdleOpacity(now: 100, lastActivity: 0, active: true), 1)
+        XCTAssertEqual(cursorIdleOpacity(now: 7.9, lastActivity: 0, active: false), 1)
+        XCTAssertEqual(cursorIdleOpacity(now: 8.0 + 0.45, lastActivity: 0, active: false), 0, accuracy: 0.0001)
+        let midway = cursorIdleOpacity(now: 8.0 + 0.225, lastActivity: 0, active: false)
+        XCTAssertGreaterThan(midway, 0.2)
+        XCTAssertLessThan(midway, 0.8)
+        XCTAssertEqual(cursorIdleOpacity(now: 9, lastActivity: 0, active: false, fadeAfter: 30), 1)
+    }
 
-        try writeSession(ownerPID: 101, agentPID: 201, channelID: "live-a", apps: ["Safari"])
-        try writeSession(ownerPID: 102, agentPID: 202, channelID: "live-b", apps: ["Finder", "Safari"])
-        try writeSession(ownerPID: 103, agentPID: 203, channelID: "stale", apps: ["Ghost"])
-
-        try writeSession(ownerPID: 104, agentPID: 204, channelID: "idle", apps: ["Calculator"], controlling: false)
-        try writeSession(ownerPID: 105, agentPID: 205, channelID: "linger", apps: ["Notes"], controlling: false, lingerUntil: 11)
-        try writeSession(ownerPID: 106, agentPID: 206, channelID: "history", apps: ["Safari", "Old App"])
-
-        let alive: (pid_t) -> Bool = { [101, 102, 104, 105, 106, 201, 202, 204, 205, 206].contains(Int($0)) }
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 10, processIsAlive: alive), ["Finder", "Notes", "Safari"])
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), ["Finder", "Safari"])
-
-        // A live connection and its overlay can persist indefinitely after end().
-        // Clearing activity must remove every historical app without killing either.
-        for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-            let url = directory.appendingPathComponent("state.json")
-            var state = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-            state["controlling"] = false
-            state["lingerUntil"] = 0
-            try JSONSerialization.data(withJSONObject: state).write(to: url)
-        }
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), [])
-        XCTAssertEqual(menuBarPresentation(currentApp: nil, controlledApps: []).statusTitle, "Ready")
+    func testReducedMotionPulseNeverScales() {
+        XCTAssertEqual(reducedMotionCursorPulse(now: 10, clickStartedAt: 10, cancelling: false).scale, 1)
+        XCTAssertEqual(reducedMotionCursorPulse(now: 10.1, clickStartedAt: 10, cancelling: false).opacity, 1)
+        XCTAssertEqual(reducedMotionCursorPulse(now: 11, clickStartedAt: 10, cancelling: false).opacity, 0.8)
     }
 
     func testMenuBarLeaseAllowsOneOwnerAndCleanTakeover() throws {

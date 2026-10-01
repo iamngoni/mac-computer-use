@@ -172,6 +172,11 @@ class MCPClient:
         environment: dict[str, str] | None = None,
     ) -> None:
         self.response_timeout = response_timeout
+        if environment is None:
+            # These live checks exercise the in-process server and its overlay
+            # agent. Service mode has its own contract tests.
+            environment = os.environ.copy()
+            environment.setdefault("MACCU_IN_PROCESS", "1")
         self.process = subprocess.Popen(
             [str(binary)],
             stdin=subprocess.PIPE,

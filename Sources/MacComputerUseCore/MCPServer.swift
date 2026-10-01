@@ -8,16 +8,29 @@ import ScreenCaptureKit
 import Darwin
 
 // MARK: - JSON-RPC handler
+func mcpInitializeResult() -> [String: Any] {
+    [
+        "protocolVersion": "2024-11-05",
+        "capabilities": ["tools": ["listChanged": false]],
+        "serverInfo": ["name": "mac-computer-use", "version": macComputerUseVersion()],
+    ]
+}
+
 func handle(_ msg: [String: Any]) {
     let id = msg["id"]
     guard let method = msg["method"] as? String else { return }
     switch method {
-    case "initialize": resultMsg(id, ["protocolVersion":"2024-11-05","capabilities":["tools":["listChanged":false]],"serverInfo":["name":"mac-computer-use","version": macComputerUseVersion()]])
+    case "initialize": resultMsg(id, mcpInitializeResult())
     case "notifications/initialized","initialized": break
     case "tools/list": resultMsg(id, ["tools": toolSchemas()])
     case "tools/call":
         let params = msg["params"] as? [String: Any] ?? [:]
-        resultMsg(id, dispatchTool(params["name"] as? String ?? "", params["arguments"] as? [String: Any] ?? [:]))
+        let name = params["name"] as? String ?? ""
+        let reportsBusy = WorkerSession.shared.isAttached
+        if reportsBusy { WorkerSession.shared.reportBusy(true, tool: name) }
+        let result = dispatchTool(name, params["arguments"] as? [String: Any] ?? [:])
+        if reportsBusy { WorkerSession.shared.reportBusy(false, tool: name) }
+        resultMsg(id, result)
     case "ping": resultMsg(id, [:])
     default: if id != nil { errorMsg(id, -32601, "Method not found: \(method)") }
     }
@@ -60,6 +73,31 @@ func ensureManagerIsRunning(bundle: Bundle = .main) {
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
     try? process.run()
+}
+
+/// `mcp` mode. Inside MacComputerUse.app it relays to the service so the
+/// client app needs no permissions; unbundled development binaries, tests and
+/// an explicit `--in-process` run the tools in this process instead.
+public func runMacComputerUseMCP(
+    arguments: [String] = CommandLine.arguments,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    bundle: Bundle = .main
+) -> Never {
+    if mcpShouldRunInProcess(arguments: arguments, environment: environment, bundleURL: bundle.bundleURL) {
+        runMacComputerUseService()
+    }
+    runMacComputerUseRelay(environment: environment, bundle: bundle)
+}
+
+public func mcpShouldRunInProcess(
+    arguments: [String],
+    environment: [String: String],
+    bundleURL: URL
+) -> Bool {
+    arguments.contains("--in-process")
+        || environment["MACCU_IN_PROCESS"] == "1"
+        || environment["MACCU_DISABLE_MANAGER"] == "1"
+        || bundleURL.pathExtension != "app"
 }
 
 public func runMacComputerUseService() -> Never {

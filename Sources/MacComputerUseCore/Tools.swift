@@ -713,5 +713,6 @@ func dispatchTool(_ name: String, _ args: [String: Any]) -> [String: Any] {
     guard let tool = toolDefinitions().first(where: { $0.name == name }) else {
         return toolText("Unknown tool: \(name)", isError: true)
     }
+    if let refusal = toolCallGate?(name) { return refusal }
     return tool.handler(args)
 }
