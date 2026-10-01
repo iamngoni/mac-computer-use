@@ -40,6 +40,12 @@ EXPECTED_TOOLS = [
     "verify_state",
     "set_window_frame",
     "invoke_menu",
+    "point_at",
+    "annotate",
+    "clear_annotations",
+    "ask_user",
+    "pick_element",
+    "wait_for_user",
     "health_report",
 ]
 

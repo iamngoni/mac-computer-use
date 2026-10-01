@@ -595,6 +595,13 @@ final class AutomationCursorView: NSView {
     var cancelling = false
     var reduceMotion = false
     var clickStartedAt: CFTimeInterval?
+    /// Flight pose around the hotspot (radians, counterclockwise) and swell.
+    var rotation: CGFloat = 0
+    var flightScale: CGFloat = 1
+    var glowColor: NSColor = .white
+    var badgeSymbol: String?
+    var shakeStartedAt: CFTimeInterval?
+    var countdown: (start: CFTimeInterval, duration: TimeInterval)?
     private let assets: AutomationCursorAssets
 
     init(frame frameRect: NSRect, assets: AutomationCursorAssets) {
@@ -618,13 +625,21 @@ final class AutomationCursorView: NSView {
                 clickStartedAt: clickStartedAt,
                 cancelling: cancelling
             )
-        // Follow the pointer silhouette with a breathing white edge glow.
-        // Click feedback changes the glow radius without moving the hotspot.
+        let hotspot = CGPoint(
+            x: bounds.midX + (reduceMotion ? 0 : cursorShakeOffset(now: now, startedAt: shakeStartedAt)),
+            y: bounds.midY
+        )
+        // Follow the pointer silhouette with a breathing edge glow. Flight
+        // rotation and swell pivot on the hotspot, so the tip stays exact.
         context.saveGState()
+        context.translateBy(x: hotspot.x, y: hotspot.y)
+        context.rotate(by: rotation)
+        context.scaleBy(x: flightScale, y: flightScale)
+        context.translateBy(x: -bounds.midX, y: -bounds.midY)
         context.setShadow(
             offset: .zero,
             blur: 2 * pulse.scale,
-            color: NSColor.white.withAlphaComponent(pulse.opacity).cgColor
+            color: glowColor.withAlphaComponent(pulse.opacity).cgColor
         )
         assets.pointer.draw(
             in: cursorPointerDrawRect(in: bounds),
@@ -633,11 +648,62 @@ final class AutomationCursorView: NSView {
             fraction: cancelling ? 0.65 : 1
         )
         context.restoreGState()
+
+        if let countdown {
+            let remaining = cursorCountdownRemaining(now: now, start: countdown.start, duration: countdown.duration)
+            if remaining > 0 { drawCountdown(context, around: hotspot, remaining: remaining) }
+        }
+        if let badgeSymbol { drawBadge(badgeSymbol, near: hotspot) }
+    }
+
+    private func drawCountdown(_ context: CGContext, around center: CGPoint, remaining: CGFloat) {
+        let radius: CGFloat = 13
+        context.saveGState()
+        context.setLineWidth(2.5)
+        context.setLineCap(.round)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.35).cgColor)
+        context.addArc(center: center, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+        context.strokePath()
+        context.setStrokeColor(NSColor.systemOrange.cgColor)
+        let start = CGFloat.pi / 2
+        context.addArc(
+            center: center,
+            radius: radius,
+            startAngle: start,
+            endAngle: start - .pi * 2 * remaining,
+            clockwise: true
+        )
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func drawBadge(_ symbol: String, near hotspot: CGPoint) {
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) else { return }
+        let diameter: CGFloat = 15
+        let circle = CGRect(x: hotspot.x + 13, y: hotspot.y - 27, width: diameter, height: diameter)
+        NSColor.white.withAlphaComponent(0.95).setFill()
+        NSBezierPath(ovalIn: circle).fill()
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        NSBezierPath(ovalIn: circle.insetBy(dx: 0.25, dy: 0.25)).stroke()
+        let configured = image.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold)) ?? image
+        let tinted = NSImage(size: configured.size, flipped: false) { rect in
+            configured.draw(in: rect)
+            accent.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        let size = tinted.size
+        tinted.draw(in: CGRect(
+            x: circle.midX - size.width / 2,
+            y: circle.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
     }
 }
 
 func makeAutomationCursorPanel(
-    size: CGFloat = 48,
+    size: CGFloat = 80,
     assets: AutomationCursorAssets = .emptyForTesting
 ) -> AutomationCursorPanel {
     let panel = AutomationCursorPanel(
@@ -775,10 +841,24 @@ final class OverlayController {
     private var lastError: String?
     /// Set in worker mode: the service renders the overlay and owns Esc.
     private var serviceChannel: JSONLineChannel?
+    private var cursorPace: CursorPace = .act
+    private var lastCursorMoveAt: CFTimeInterval = 0
+    private var currentWindowID: CGWindowID?
 
     private var usesService: Bool {
         lock.lock(); defer { lock.unlock() }
         return serviceChannel != nil
+    }
+
+    var isServiceAttached: Bool { usesService }
+
+    /// Sends a presentation message (bubble, drawing, countdown) to the
+    /// service. Returns false in-process, where there is no service overlay.
+    @discardableResult
+    func sendToService(_ message: [String: Any]) -> Bool {
+        lock.lock(); let service = serviceChannel; lock.unlock()
+        guard let service else { return false }
+        return service.send(message)
     }
 
     func attachServiceChannel(_ channel: JSONLineChannel) {
@@ -1043,6 +1123,8 @@ final class OverlayController {
             "target": target.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? [],
             "flashes": flashes.map { [$0.0.x, $0.0.y, $0.1] },
             "pid": Int(getpid()), "ts": CACurrentMediaTime(),
+            "cursor_pace": cursorPace.rawValue,
+            "window_id": currentWindowID.map { Int($0) } ?? NSNull(),
         ]
         let service = serviceChannel
         lock.unlock()
@@ -1083,6 +1165,9 @@ final class OverlayController {
         }
         target = targetQuartz
         lingerUntil = 0
+        if let snapshot = lastSnapshot, appPID == nil || snapshot.pid == appPID {
+            currentWindowID = snapshot.windowId
+        }
         lock.unlock()
         writeState()
         return agentPID
@@ -1098,11 +1183,55 @@ final class OverlayController {
         writeState()
     }
     func end() { lock.lock(); controlling = false; lingerUntil = CACurrentMediaTime() + 0.9; lock.unlock(); writeState() }
-    func moveCursorQuartz(_ p: CGPoint) {
-        lock.lock(); cursor = p; lock.unlock(); writeState()
+    /// Moves the virtual cursor. With the service, waits until the cursor
+    /// has landed, so the person sees where an action happens before it does.
+    func moveCursorQuartz(_ p: CGPoint, pace: CursorPace = .act) {
+        let wait = beginCursorMove(to: p, pace: pace)
+        writeState()
+        waitForCursorArrival(wait)
     }
     func flashClickQuartz(_ p: CGPoint) {
+        let wait = beginCursorMove(to: p, pace: .act)
+        if wait > 0 {
+            writeState()
+            waitForCursorArrival(wait)
+        }
         lock.lock(); cursor = p; flashes.append((p, CACurrentMediaTime())); if flashes.count > 8 { flashes.removeFirst(flashes.count - 8) }; lock.unlock(); writeState()
+    }
+
+    /// Records the new target and returns how long the service's flight
+    /// takes. A cursor that has faded out reappears at the target instantly.
+    private func beginCursorMove(to p: CGPoint, pace: CursorPace) -> TimeInterval {
+        let now = CACurrentMediaTime()
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = cursor
+        let recentlyVisible = now - lastCursorMoveAt < 8
+        cursor = p
+        cursorPace = pace
+        lastCursorMoveAt = now
+        guard serviceChannel != nil, recentlyVisible, let previous else { return 0 }
+        return cursorFlightDuration(
+            distance: hypot(p.x - previous.x, p.y - previous.y),
+            pace: pace,
+            multiplier: cursorPaceMultiplier()
+        )
+    }
+
+    private func waitForCursorArrival(_ duration: TimeInterval) {
+        guard duration > 0 else { return }
+        let deadline = CACurrentMediaTime() + min(duration, 1.6)
+        while CACurrentMediaTime() < deadline, !cancelFlag.value { usleep(10_000) }
+    }
+
+    /// Keeps the cursor awake while the person reads a bubble or answers.
+    func touchCursor() {
+        lock.lock(); lastCursorMoveAt = CACurrentMediaTime(); lock.unlock()
+    }
+
+    var cursorQuartz: CGPoint? {
+        lock.lock(); defer { lock.unlock() }
+        return cursor
     }
     func markCancelling() { lock.lock(); cancelling = true; lock.unlock(); writeState() }
     func hideForCapture() {
@@ -1127,6 +1256,9 @@ func controlled(
     if let refusal = actionGate?() { return refusal }
     cancelFlag.set(false)
     OverlayController.shared.resetCancellation()
+    if let pid = appPID, appName != "Desktop", let busy = yieldToUser(targetPID: pid, appName: appName) {
+        return busy
+    }
     guard let agentPID = OverlayController.shared.begin(
         status: status,
         appPID: appPID,
@@ -1162,6 +1294,9 @@ func controlled(
     if cancelFlag.value {
         // Esc is a human brake, not a soft result the agent can talk past.
         return userInterruptedResult(actionReport: toolResultText(result))
+    }
+    if result["isError"] as? Bool == true {
+        OverlayController.shared.sendToService(["type": "cursor_feedback", "kind": "error"])
     }
     return result
 }

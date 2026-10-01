@@ -258,6 +258,12 @@ final class CoreContractTests: XCTestCase {
                 "verify_state",
                 "set_window_frame",
                 "invoke_menu",
+                "point_at",
+                "annotate",
+                "clear_annotations",
+                "ask_user",
+                "pick_element",
+                "wait_for_user",
                 "health_report",
             ]
         )
@@ -353,14 +359,14 @@ final class CoreContractTests: XCTestCase {
     }
 
     func testCursorAssetGeometryAlignsPointerHotspotToAutomationCoordinate() {
-        let bounds = CGRect(x: 0, y: 0, width: 48, height: 48)
+        let bounds = CGRect(x: 0, y: 0, width: 80, height: 80)
         XCTAssertEqual(
             cursorPointerDrawRect(in: bounds),
-            CGRect(x: 17.25, y: 2.5, width: 28, height: 28)
+            CGRect(x: 33.25, y: 18.5, width: 28, height: 28)
         )
         XCTAssertEqual(
             cursorPulseDrawRect(in: bounds, scale: 1),
-            CGRect(x: 10, y: 10, width: 28, height: 28)
+            CGRect(x: 26, y: 26, width: 28, height: 28)
         )
     }
 
@@ -426,6 +432,63 @@ final class CoreContractTests: XCTestCase {
         let bounds = CGRect(origin: .zero, size: panel.frame.size)
         XCTAssertTrue(bounds.contains(cursorPointerDrawRect(in: bounds)))
         XCTAssertTrue(bounds.contains(cursorPulseDrawRect(in: bounds, scale: 1)))
+
+        // Mid-flight the arrow can turn any way and swell 1.3x around its
+        // hotspot; the farthest canvas corner must still fit in the panel.
+        let canvas = AutomationCursorAssets.canvasSize
+        let hotspot = AutomationCursorAssets.pointerHotspot
+        let reach = [
+            CGPoint(x: 0, y: 0), CGPoint(x: canvas.width, y: 0),
+            CGPoint(x: 0, y: canvas.height), CGPoint(x: canvas.width, y: canvas.height),
+        ].map { hypot($0.x - hotspot.x, $0.y - hotspot.y) }.max()! * 1.3
+        XCTAssertLessThanOrEqual(reach, min(bounds.width, bounds.height) / 2)
+    }
+
+    func testArcFlightLandsExactlyAndFacesItsDirectionOfTravel() {
+        let flight = CursorFlight(
+            from: CGPoint(x: 0, y: 0), to: CGPoint(x: 800, y: 0), start: 10, pace: .teach
+        )
+        XCTAssertEqual(flight.duration, 1.0, accuracy: 0.0001)
+        let start = flight.sample(at: 10)
+        XCTAssertEqual(start.point, CGPoint(x: 0, y: 0))
+        XCTAssertEqual(start.rotation, 0, accuracy: 0.0001)
+        let middle = flight.sample(at: 10.5)
+        XCTAssertEqual(middle.point.x, 400, accuracy: 0.5)
+        XCTAssertGreaterThan(middle.point.y, 0, "the path arcs upward")
+        XCTAssertEqual(middle.scale, 1.3, accuracy: 0.0001)
+        // Flying right, the up-left resting arrow turns clockwise to face +x.
+        XCTAssertEqual(middle.rotation, -.pi * 3 / 4, accuracy: 0.01)
+        let landed = flight.sample(at: 11.2)
+        XCTAssertEqual(landed, CursorFlight.Sample(point: CGPoint(x: 800, y: 0), rotation: 0, scale: 1, finished: true))
+    }
+
+    func testFlightPaceKeepsActionsQuickAndSkipsTinyHops() {
+        XCTAssertEqual(cursorFlightDuration(distance: 3, pace: .act), 0)
+        XCTAssertEqual(cursorFlightDuration(distance: 100, pace: .act), 0.18, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 5000, pace: .act), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 100, pace: .teach), 0.6, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 5000, pace: .teach), 1.4, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 400, pace: .act, multiplier: 0), 0)
+        XCTAssertEqual(cursorPaceMultiplier(environment: ["MACCU_CURSOR_PACE": "showcase"]), 2)
+        XCTAssertEqual(cursorPaceMultiplier(environment: ["MACCU_CURSOR_PACE": "off"]), 0)
+        XCTAssertEqual(cursorPaceMultiplier(environment: [:]), 1)
+    }
+
+    func testCursorCuesDescribeTheActionAndStaySmall() {
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Typing"), "keyboard")
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Scrolling down"), "arrow.up.and.down")
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Pressing cmd+t"), "command")
+        XCTAssertNil(cursorBadgeSymbol(forStatus: "Clicking"))
+        XCTAssertEqual(cursorShakeOffset(now: 5, startedAt: nil), 0)
+        XCTAssertEqual(cursorShakeOffset(now: 5.5, startedAt: 5), 0)
+        XCTAssertLessThanOrEqual(abs(cursorShakeOffset(now: 5.03, startedAt: 5)), 4)
+        XCTAssertEqual(cursorCountdownRemaining(now: 1, start: 0, duration: 2), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(cursorCountdownRemaining(now: 3, start: 0, duration: 2), 0)
+        XCTAssertEqual(
+            cursorIdentityColorIndex(forClientKey: "team:A:x"),
+            cursorIdentityColorIndex(forClientKey: "team:A:x")
+        )
+        XCTAssertTrue((0..<cursorIdentityPalette.count).contains(cursorIdentityColorIndex(forClientKey: "k")))
     }
 
     func testCursorAssetClickMotionUsesAuthoredCompressionAndReboundTiming() {
@@ -570,6 +633,40 @@ final class CoreContractTests: XCTestCase {
             staleLegacyOverlayChannelNames(names, isAlive: { $0 == 200 }),
             ["mac-computer-use-overlay-100-aaaa-bbbb"]
         )
+    }
+
+    func testRiskyActionsAreRecognisedByWholeWords() {
+        XCTAssertEqual(riskyActionPhrase(["Send"]), "send")
+        XCTAssertEqual(riskyActionPhrase([nil, "Move to Trash"]), "move to trash")
+        XCTAssertEqual(riskyActionPhrase(["Place Order"]), "place order")
+        XCTAssertNil(riskyActionPhrase(["Sender details", "Postcode", "Reload"]))
+        XCTAssertNil(riskyActionPhrase([nil, ""]))
+        XCTAssertEqual(riskyConfirmationDelay(environment: [:]), 2)
+        XCTAssertEqual(riskyConfirmationDelay(environment: ["MACCU_RISKY_CONFIRM_MS": "0"]), 0)
+        XCTAssertEqual(riskyConfirmationDelay(environment: ["MACCU_RISKY_CONFIRM_MS": "50000"]), 10)
+    }
+
+    func testAgentsYieldOnlyWhenTheUserIsActiveInTheSameApp() {
+        XCTAssertTrue(shouldYieldToUser(secondsSinceInput: 0.2, targetIsFrontmost: true))
+        XCTAssertFalse(shouldYieldToUser(secondsSinceInput: 0.2, targetIsFrontmost: false))
+        XCTAssertFalse(shouldYieldToUser(secondsSinceInput: 5, targetIsFrontmost: true))
+    }
+
+    func testInteractionToolsRefuseWithoutTheService() {
+        for name in ["point_at", "annotate", "clear_annotations", "ask_user", "pick_element", "wait_for_user"] {
+            let result = dispatchTool(name, ["app": "Finder", "question": "q", "options": ["a", "b"], "instruction": "i"])
+            XCTAssertEqual(result["isError"] as? Bool, true, name)
+            XCTAssertTrue((toolResultText(result) ?? "").hasPrefix("[requires_service]"), name)
+        }
+    }
+
+    func testElementIndexesAcceptIntegersOrIntegerStrings() {
+        XCTAssertEqual(parseElementIndex("12") ?? nil, 12)
+        XCTAssertEqual(parseElementIndex(NSNumber(value: 7)) ?? nil, 7)
+        XCTAssertNotNil(parseElementIndex(nil))
+        XCTAssertNil(parseElementIndex(nil) ?? nil)
+        XCTAssertNil(parseElementIndex("-1"))
+        XCTAssertNil(parseElementIndex(true))
     }
 
     func testCursorFadesOutOnlyAfterTheIdleDelay() {

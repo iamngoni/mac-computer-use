@@ -43,6 +43,8 @@ final class WorkerSession: @unchecked Sendable {
     private var paused = false
     private var overlayWindows: [CGWindowID] = []
     private var sessionInfo: [String: Any] = [:]
+    private var nextRequestID = 1
+    private var responses: [Int: [String: Any]] = [:]
 
     var isAttached: Bool {
         condition.lock(); defer { condition.unlock() }
@@ -116,8 +118,76 @@ final class WorkerSession: @unchecked Sendable {
         case "overlay_windows":
             let identifiers = (message["ids"] as? [NSNumber] ?? []).map { CGWindowID($0.uint32Value) }
             condition.lock(); overlayWindows = identifiers; condition.unlock()
+        case "response":
+            guard let id = message["id"] as? Int else { return }
+            condition.lock()
+            responses[id] = message
+            condition.broadcast()
+            condition.unlock()
         default:
             break
+        }
+    }
+
+    enum InteractionOutcome {
+        case response([String: Any])
+        case cancelled
+        case timedOut
+        case unavailable
+        case polled([String: Any])
+    }
+
+    /// Asks the service to run an interaction with the person (a question,
+    /// pick mode, a hand-off) and waits for it. Esc (`cancelFlag`) or the
+    /// timeout ends the wait and dismisses the interaction. `poll` runs every
+    /// 100 ms; a non-nil result ends the interaction early.
+    func interact(
+        _ kind: String,
+        _ parameters: [String: Any],
+        timeout: TimeInterval,
+        poll: (() -> [String: Any]?)? = nil
+    ) -> InteractionOutcome {
+        condition.lock()
+        guard let channel, channel.isOpen else {
+            condition.unlock()
+            return .unavailable
+        }
+        let id = nextRequestID
+        nextRequestID += 1
+        condition.unlock()
+        var message = parameters
+        message["type"] = "request"
+        message["kind"] = kind
+        message["id"] = id
+        message["timeout_ms"] = Int(timeout * 1000)
+        guard channel.send(message) else { return .unavailable }
+
+        let deadline = Date().addingTimeInterval(timeout + 1)
+        while true {
+            condition.lock()
+            if let response = responses.removeValue(forKey: id) {
+                condition.unlock()
+                switch response["outcome"] as? String {
+                case "cancelled": return .cancelled
+                case "timeout": return .timedOut
+                default: return .response(response)
+                }
+            }
+            _ = condition.wait(until: Date().addingTimeInterval(0.1))
+            condition.unlock()
+            if cancelFlag.value {
+                channel.send(["type": "request_cancel", "id": id])
+                return .cancelled
+            }
+            if let poll, let early = poll() {
+                channel.send(["type": "request_cancel", "id": id])
+                return .polled(early)
+            }
+            if Date() > deadline {
+                channel.send(["type": "request_cancel", "id": id])
+                return .timedOut
+            }
+            if !channel.isOpen { return .unavailable }
         }
     }
 

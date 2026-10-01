@@ -107,235 +107,24 @@ final class ServiceSession {
     }
 }
 
-// MARK: - Overlay presenter
+// MARK: - Service host
 
-/// Renders the cursor of every session and the shared action banner. Its
-/// timer runs only while something is visible or moving.
+/// A question, pick or hand-off waiting on the person.
 @MainActor
-final class ServiceOverlayPresenter {
-    private struct SessionCursor {
-        let panel: AutomationCursorPanel
-        let view: AutomationCursorView
-        var motion = CursorMotionState()
-        var state: [String: Any] = [:]
-        var target: CGPoint?
-        var lastActivity: CFTimeInterval = 0
-        var lastFlashTimestamp: Double?
-        var pendingClick: (point: CGPoint, observedAt: CFTimeInterval)?
-        var lastFrameTime = CACurrentMediaTime()
-    }
+final class ActiveInteraction {
+    let sessionID: String
+    let requestID: Int
+    let windowIDs: () -> [CGWindowID]
+    let dismiss: () -> Void
+    var timer: Timer?
 
-    private let assets: AutomationCursorAssets
-    private let captureVisible: Bool
-    private let bannerWindow: NSWindow
-    private let bannerView: OverlayView
-    private var cursors: [String: SessionCursor] = [:]
-    private var timer: Timer?
-    private var pausedBannerUntil: CFTimeInterval = 0
-    private var paused = false
-    private var screenObserver: NSObjectProtocol?
-    var fadeAfter: TimeInterval = 8
-    var onWindowsChanged: (([CGWindowID]) -> Void)?
-
-    init(assets: AutomationCursorAssets, captureVisible: Bool) {
-        self.assets = assets
-        self.captureVisible = captureVisible
-        let frame = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
-        bannerWindow = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
-        bannerWindow.isOpaque = false
-        bannerWindow.backgroundColor = .clear
-        bannerWindow.level = .screenSaver
-        bannerWindow.ignoresMouseEvents = true
-        bannerWindow.hasShadow = false
-        bannerWindow.isReleasedWhenClosed = false
-        bannerWindow.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        bannerWindow.sharingType = captureVisible ? .readOnly : .none
-        bannerView = OverlayView(frame: CGRect(origin: .zero, size: frame.size))
-        bannerWindow.contentView = bannerView
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screensChanged() }
-        }
-    }
-
-    var hasVisibleCursor: Bool {
-        cursors.values.contains { $0.panel.isVisible && $0.panel.alphaValue > 0.01 }
-    }
-
-    var windowIDs: [CGWindowID] {
-        var identifiers = [CGWindowID(bannerWindow.windowNumber)]
-        identifiers += cursors.values.map { CGWindowID($0.panel.windowNumber) }
-        return identifiers.filter { $0 > 0 }
-    }
-
-    func update(sessionID: String, state: [String: Any]) {
-        var cursor = cursors[sessionID] ?? makeCursor()
-        let now = CACurrentMediaTime()
-        let previous = cursor.state
-        cursor.state = state
-        if let point = state["cursor"] as? [Double], point.count == 2 {
-            let target = quartzPointToCocoa(CGPoint(x: point[0], y: point[1]))
-            if cursor.target != target { cursor.lastActivity = now }
-            cursor.target = target
-        }
-        let controlling = state["controlling"] as? Bool ?? false
-        if controlling || (previous["status"] as? String) != (state["status"] as? String) {
-            cursor.lastActivity = now
-        }
-        if let flash = (state["flashes"] as? [[Double]])?.last, flash.count == 3,
-           flash[2] != cursor.lastFlashTimestamp {
-            cursor.lastFlashTimestamp = flash[2]
-            if flash[2] <= now, now - flash[2] < 0.75 {
-                cursor.pendingClick = (quartzPointToCocoa(CGPoint(x: flash[0], y: flash[1])), now)
-                cursor.lastActivity = now
-            }
-        }
-        let isNew = cursors[sessionID] == nil
-        cursors[sessionID] = cursor
-        if isNew { onWindowsChanged?(windowIDs) }
-        ensureTimer()
-    }
-
-    func removeSession(_ sessionID: String) {
-        guard let cursor = cursors.removeValue(forKey: sessionID) else { return }
-        cursor.panel.orderOut(nil)
-        cursor.panel.close()
-        onWindowsChanged?(windowIDs)
-        ensureTimer()
-    }
-
-    func removeAll() {
-        for id in Array(cursors.keys) { removeSession(id) }
-        bannerWindow.orderOut(nil)
-        timer?.invalidate()
-        timer = nil
-    }
-
-    func setPaused(_ paused: Bool) {
-        self.paused = paused
-        pausedBannerUntil = paused ? CACurrentMediaTime() + 4 : 0
-        ensureTimer()
-    }
-
-    private func makeCursor() -> SessionCursor {
-        let panel = makeAutomationCursorPanel(assets: assets)
-        panel.sharingType = captureVisible ? .readOnly : .none
-        panel.alphaValue = 0
-        let view = panel.contentView as! AutomationCursorView
-        return SessionCursor(panel: panel, view: view)
-    }
-
-    private func screensChanged() {
-        let frame = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
-        bannerWindow.setFrame(frame, display: bannerWindow.isVisible)
-        bannerView.frame = CGRect(origin: .zero, size: frame.size)
-    }
-
-    private func ensureTimer() {
-        guard timer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-        tick()
-    }
-
-    private func tick() {
-        let now = CACurrentMediaTime()
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        var needsFrames = false
-        var bannerSession: SessionCursor?
-
-        for (id, var cursor) in cursors {
-            let controlling = cursor.state["controlling"] as? Bool ?? false
-            let lingerUntil = cursor.state["lingerUntil"] as? Double ?? 0
-            let active = controlling || now < lingerUntil
-            if active {
-                cursor.lastActivity = max(cursor.lastActivity, now)
-                if bannerSession == nil || controlling { bannerSession = cursor }
-            }
-            let delta = now - cursor.lastFrameTime
-            cursor.lastFrameTime = now
-            var displayed: CGPoint?
-            if let target = cursor.target {
-                displayed = reduceMotion
-                    ? target
-                    : cursor.motion.advance(toward: target, deltaTime: delta)
-                if reduceMotion { cursor.motion.reset() }
-            }
-            if let click = cursor.pendingClick, let displayed {
-                let distance = hypot(click.point.x - displayed.x, click.point.y - displayed.y)
-                if reduceMotion || distance < 12 || now - click.observedAt >= 0.2 {
-                    cursor.view.clickStartedAt = now
-                    cursor.pendingClick = nil
-                }
-            }
-            let opacity = cursorIdleOpacity(
-                now: now,
-                lastActivity: cursor.lastActivity,
-                active: active,
-                fadeAfter: fadeAfter
-            )
-            if let displayed, opacity > 0.001 {
-                cursor.view.reduceMotion = reduceMotion
-                cursor.view.cancelling = cursor.state["cancelling"] as? Bool ?? false
-                cursor.panel.setFrameOrigin(CGPoint(
-                    x: displayed.x - cursor.panel.frame.width / 2,
-                    y: displayed.y - cursor.panel.frame.height / 2
-                ))
-                cursor.panel.alphaValue = opacity
-                if !cursor.panel.isVisible {
-                    cursor.panel.orderFrontRegardless()
-                    onWindowsChanged?(windowIDs)
-                }
-                cursor.view.needsDisplay = true
-                needsFrames = true
-            } else if cursor.panel.isVisible {
-                cursor.panel.alphaValue = 0
-                cursor.panel.orderOut(nil)
-            }
-            cursors[id] = cursor
-        }
-
-        let showPausedBanner = paused && now < pausedBannerUntil
-        if let bannerSession, !showPausedBanner {
-            bannerView.controlling = true
-            bannerView.paused = false
-            bannerView.cancelling = bannerSession.state["cancelling"] as? Bool ?? false
-            bannerView.status = bannerSession.state["status"] as? String ?? ""
-            bannerView.hint = "Esc to stop"
-        } else if showPausedBanner {
-            bannerView.controlling = true
-            bannerView.paused = true
-            bannerView.cancelling = false
-            bannerView.status = "Agents paused"
-            bannerView.hint = "Resume from the menu bar"
-        } else {
-            bannerView.controlling = false
-        }
-        if bannerView.controlling {
-            if !bannerWindow.isVisible {
-                bannerWindow.orderFrontRegardless()
-                onWindowsChanged?(windowIDs)
-            }
-            bannerView.needsDisplay = true
-            needsFrames = true
-        } else if bannerWindow.isVisible {
-            bannerWindow.orderOut(nil)
-        }
-
-        if !needsFrames {
-            timer?.invalidate()
-            timer = nil
-        }
+    init(sessionID: String, requestID: Int, windowIDs: @escaping () -> [CGWindowID], dismiss: @escaping () -> Void) {
+        self.sessionID = sessionID
+        self.requestID = requestID
+        self.windowIDs = windowIDs
+        self.dismiss = dismiss
     }
 }
-
-// MARK: - Service host
 
 /// Legacy overlay folders are named `mac-computer-use-overlay-<owner pid>-<uuid>`.
 func staleLegacyOverlayChannelNames(_ names: [String], isAlive: (pid_t) -> Bool) -> [String] {
@@ -363,6 +152,7 @@ public final class ServiceHost {
     private var isPrompting = false
     private var keyMonitors: [Any] = []
     private var refreshScheduled = false
+    private var interactions: [ActiveInteraction] = []
     public private(set) var isPaused = false
     public var onChange: (() -> Void)?
     public private(set) var lastError: String?
@@ -555,6 +345,11 @@ public final class ServiceHost {
         )
         session.approval = approvalState(for: identity)
         sessions[sessionID] = session
+        presenter?.setIdentity(
+            sessionID: sessionID,
+            name: identity.displayName,
+            colorIndex: cursorIdentityColorIndex(forClientKey: identity.key)
+        )
         control.startReading(
             onMessage: { [weak self] message in
                 DispatchQueue.main.async {
@@ -650,6 +445,9 @@ public final class ServiceHost {
 
     private func end(_ sessionID: String) {
         guard let session = sessions.removeValue(forKey: sessionID) else { return }
+        for interaction in interactions where interaction.sessionID == sessionID {
+            finishInteraction(interaction, respond: nil)
+        }
         presenter?.removeSession(sessionID)
         log("session \(sessionID) ended for \(session.client.displayName)")
         notifyChange()
@@ -670,9 +468,158 @@ public final class ServiceHost {
             notifyChange()
         case "approval_request":
             requestApproval(for: session)
+        case "bubble":
+            let hold = (message["hold_ms"] as? NSNumber)?.doubleValue ?? 4000
+            presenter?.showBubble(
+                sessionID: sessionID,
+                text: message["text"] as? String ?? "",
+                style: BubbleStyle(rawValue: message["style"] as? String ?? "") ?? .teach,
+                holdSeconds: hold > 0 ? hold / 1000 : nil
+            )
+        case "bubble_clear":
+            presenter?.clearBubble(sessionID: sessionID)
+        case "annotate":
+            presenter?.annotations.show(
+                items: message["items"] as? [[String: Any]] ?? [],
+                caption: message["caption"] as? String,
+                captionAnchor: quartzRect(message["window_bounds"]),
+                duration: ((message["duration_ms"] as? NSNumber)?.doubleValue ?? 8000) / 1000,
+                windowID: (message["window_id"] as? NSNumber).map { CGWindowID($0.uint32Value) },
+                windowBounds: quartzRect(message["window_bounds"]),
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+        case "annotations_clear":
+            presenter?.annotations.clear()
+        case "countdown":
+            presenter?.startCountdown(
+                sessionID: sessionID,
+                duration: ((message["duration_ms"] as? NSNumber)?.doubleValue ?? 2000) / 1000
+            )
+        case "cursor_feedback":
+            if message["kind"] as? String == "error" { presenter?.shake(sessionID: sessionID) }
+        case "request":
+            startInteraction(message, for: session)
+        case "request_cancel":
+            if let id = message["id"] as? Int,
+               let interaction = interactions.first(where: { $0.sessionID == sessionID && $0.requestID == id }) {
+                finishInteraction(interaction, respond: nil)
+            }
         default:
             break
         }
+    }
+
+    // MARK: Interactions
+
+    private func startInteraction(_ message: [String: Any], for session: ServiceSession) {
+        guard let requestID = message["id"] as? Int else { return }
+        let sessionID = session.id
+        let timeout = ((message["timeout_ms"] as? NSNumber)?.doubleValue ?? 120_000) / 1000
+        let capture = environment["MACCU_CAPTURE_OVERLAY"] == "1"
+        var interaction: ActiveInteraction?
+        if message["kind"] as? String != "wait_click" { presenter?.clearBubble(sessionID: sessionID) }
+        func respond(_ payload: [String: Any]) {
+            guard let current = interaction else { return }
+            finishInteraction(current, respond: payload)
+        }
+        switch message["kind"] as? String {
+        case "ask":
+            let options = (message["options"] as? [String] ?? []).prefix(4).map { String($0.prefix(40)) }
+            guard options.count >= 2 else {
+                session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
+                return
+            }
+            let prompt = ChoicePrompt(
+                question: String((message["question"] as? String ?? "").prefix(200)),
+                options: Array(options),
+                near: presenter?.cursorPoint(for: sessionID),
+                captureVisible: capture
+            ) { index in
+                if let index {
+                    respond(["outcome": "chosen", "index": index, "choice": options[index]])
+                } else {
+                    respond(["outcome": "cancelled"])
+                }
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { [CGWindowID(prompt.panel.windowNumber)] },
+                dismiss: { prompt.finish(nil) }
+            )
+        case "pick":
+            let pick = PickSession(
+                prompt: String((message["prompt"] as? String ?? "Click the item you mean").prefix(160)),
+                multiple: message["multiple"] as? Bool ?? false,
+                captureVisible: capture
+            ) { points in
+                guard let points else {
+                    respond(["outcome": "cancelled"])
+                    return
+                }
+                respond([
+                    "outcome": "picked",
+                    "points": points.map { [Double($0.x), Double($0.y)] },
+                    "owners": points.map { windowOwnerUnder($0).map { Int($0) } ?? 0 },
+                ])
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { pick.windowIDs },
+                dismiss: { pick.finish(nil) }
+            )
+        case "wait_click":
+            guard let rect = quartzRect(message["rect"]) else {
+                session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
+                return
+            }
+            var lastNudge: CFTimeInterval = 0
+            let watch = HandoffWatch(
+                target: rect,
+                onInside: { respond(["outcome": "clicked"]) },
+                onOutside: { [weak self] in
+                    let now = CACurrentMediaTime()
+                    guard now - lastNudge > 1 else { return }
+                    lastNudge = now
+                    self?.presenter?.shake(sessionID: sessionID)
+                }
+            )
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { [] },
+                dismiss: { watch.stop() }
+            )
+        default:
+            session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
+            return
+        }
+        guard let interaction else { return }
+        interaction.timer = Timer.scheduledTimer(withTimeInterval: max(timeout, 1), repeats: false) { [weak self, weak interaction] _ in
+            MainActor.assumeIsolated {
+                guard let self, let interaction else { return }
+                self.finishInteraction(interaction, respond: ["outcome": "timeout"])
+            }
+        }
+        interactions.append(interaction)
+        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() })
+    }
+
+    /// Ends an interaction once: dismisses its surface, and replies to the
+    /// worker unless the worker itself withdrew the request.
+    private func finishInteraction(_ interaction: ActiveInteraction, respond payload: [String: Any]?) {
+        guard let index = interactions.firstIndex(where: { $0 === interaction }) else { return }
+        interactions.remove(at: index)
+        interaction.timer?.invalidate()
+        interaction.dismiss()
+        if let payload, let session = sessions[interaction.sessionID] {
+            var message = payload
+            message["type"] = "response"
+            message["id"] = interaction.requestID
+            session.control.send(message)
+        }
+        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() })
     }
 
     // MARK: Approval
@@ -761,10 +708,18 @@ public final class ServiceHost {
     }
 
     private func escapePressed() {
+        // Esc first dismisses whatever the agent asked the person.
+        if let latest = interactions.last {
+            finishInteraction(latest, respond: ["outcome": "cancelled"])
+            return
+        }
         let now = CACurrentMediaTime()
         let agentVisible = presenter?.hasVisibleCursor == true
             || sessions.values.contains { $0.isActive(now: now) }
-        guard agentVisible else { return }
+        guard agentVisible else {
+            presenter?.annotations.clear()
+            return
+        }
         broadcast(["type": "cancel"])
         setPaused(true)
     }
