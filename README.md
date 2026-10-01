@@ -127,6 +127,8 @@ Requires the Swift toolchain (Xcode or Command Line Tools).
 This builds the Swift package's release executable, embeds Sparkle and the cursor assets in `MacComputerUse.app`,
 and ad-hoc code-signs the bundle with the stable identifier
 `com.modestnerd.mac-computer-use` so macOS permission grants survive in-place rebuilds.
+Local builds use the hardened runtime like releases do, so `DYLD_*` injection is ignored; only library
+validation is relaxed, because ad-hoc code has no Team ID to match the bundled Sparkle framework.
 The version comes from `VERSION`; the executable and `Info.plist` both target macOS 13 or later. Local builds intentionally omit the Sparkle feed and public key, so they never contact the release channel.
 
 ## Test
