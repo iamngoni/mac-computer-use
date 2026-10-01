@@ -316,7 +316,12 @@ func toolTypeText(_ args: [String: Any]) -> [String: Any] {
 func toolPressKey(_ args: [String: Any]) -> [String: Any] {
     guard let k = args["key"] as? String else { return toolText("press_key needs 'key'.", isError: true) }
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
-    return controlled("Pressing \(k)", appPID: pid) { pressKeyCombo(k, pid: pid) ? toolText("Pressed \(k).") : toolText("Unknown key: \(k).", isError: true) }
+    return controlled("Pressing \(k)", appPID: pid) {
+        switch sendKeyCombo(k, pid: pid) {
+        case .success: return toolText("Pressed \(k).")
+        case .failure(let error): return toolText(error.description, isError: true)
+        }
+    }
 }
 func toolScroll(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
