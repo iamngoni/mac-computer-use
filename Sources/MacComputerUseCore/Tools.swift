@@ -827,6 +827,36 @@ func toolDefinitions() -> [ToolDefinition] {
             handler: toolWaitForUser
         ),
         ToolDefinition(
+            name: "guide",
+            description: "Walk the user through a task step by step: for each step the cursor points at an element with an instruction and waits until the user clicks it, then moves on. Steps may carry annotate items. Set save_as to keep the tour (element-based, not pixels) so the user can replay it later from the Mac Computer Use menu without you.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "steps": [
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "element_index": ["type": ["string", "integer"]],
+                                "x": number,
+                                "y": number,
+                                "instruction": ["type": "string", "maxLength": 140],
+                                "annotate": ["type": "array", "items": ["type": "object"]],
+                            ],
+                            "required": ["instruction"],
+                        ],
+                    ],
+                    "title": ["type": "string", "maxLength": 80],
+                    "save_as": ["type": "string", "maxLength": 60, "description": "Name to save the tour under. Every step must use element_index."],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Per step. Default 120."],
+                ],
+                ["app", "steps"]
+            ),
+            handler: toolGuide
+        ),
+        ToolDefinition(
             name: "health_report",
             description: "Report permission, process, bundle, overlay, app/window-resolution, and input-safety health as machine-readable JSON without prompting for permissions.",
             inputSchema: obj([:], []),

@@ -61,13 +61,19 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             quit: { [weak self] in self?.quitFromMenu() },
             isPaused: { [weak host] in host?.isPaused == true },
             setPaused: { [weak host] paused in host?.setPaused(paused) },
-            sessions: { [weak host] in host?.sessionSummaries ?? [] }
+            sessions: { [weak host] in host?.sessionSummaries ?? [] },
+            agentPreviewEnabled: { [weak host] in host?.agentPreviewEnabled == true },
+            setAgentPreviewEnabled: { [weak host] enabled in host?.agentPreviewEnabled = enabled },
+            tours: { [weak host] in (host?.savedTours ?? []).map { (name: $0.name, title: $0.title) } },
+            playTour: { [weak host] name in host?.playTour(named: name) },
+            openToursFolder: { [weak host] in host?.openToursFolder() }
         )
         let coordinator = AutomationStatusBarCoordinator(
             cursorImage: cursor,
             actions: actions
         )
         statusCoordinator = coordinator
+        setup.statusItemFrame = { [weak coordinator] in coordinator?.statusItemFrame }
         host.onChange = { [weak self] in self?.refreshStatusItem() }
         refreshStatusItem()
 

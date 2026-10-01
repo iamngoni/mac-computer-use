@@ -46,6 +46,7 @@ EXPECTED_TOOLS = [
     "ask_user",
     "pick_element",
     "wait_for_user",
+    "guide",
     "health_report",
 ]
 

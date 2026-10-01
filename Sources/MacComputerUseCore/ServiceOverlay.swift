@@ -907,6 +907,28 @@ final class ServiceOverlayPresenter {
         ensureTimer()
     }
 
+    /// Drives a cursor the service owns (the Setup demo, guided tours) the
+    /// same way a worker's state messages do.
+    func moveLocalCursor(sessionID: String, name: String, to quartz: CGPoint, pace: CursorPace, linger: TimeInterval) {
+        if cursors[sessionID] == nil { setIdentity(sessionID: sessionID, name: name, colorIndex: 0) }
+        let now = CACurrentMediaTime()
+        update(sessionID: sessionID, state: [
+            "controlling": false,
+            "lingerUntil": now + linger,
+            "status": "",
+            "cursor": [Double(quartz.x), Double(quartz.y)],
+            "cursor_pace": pace.rawValue,
+            "flashes": [[Double]](),
+            "local": true,
+        ])
+    }
+
+    func flightDuration(sessionID: String, to quartz: CGPoint, pace: CursorPace) -> TimeInterval {
+        guard let cursor = cursors[sessionID], cursor.visible, let from = cursor.displayed else { return 0 }
+        let target = quartzPointToCocoa(quartz)
+        return cursorFlightDuration(distance: hypot(target.x - from.x, target.y - from.y), pace: pace, multiplier: cursorPaceMultiplier())
+    }
+
     func showBubble(sessionID: String, text: String, style: BubbleStyle, holdSeconds: Double?) {
         guard var cursor = cursors[sessionID] else { return }
         let bubble = cursor.bubble ?? CursorBubblePanel(captureVisible: captureVisible)
@@ -1009,10 +1031,14 @@ final class ServiceOverlayPresenter {
             let lingerUntil = cursor.state["lingerUntil"] as? Double ?? 0
             let bubbleShowing = cursor.bubble.map { $0.isVisible && ($0.hideAt.map { now < $0 } ?? true) } ?? false
             let active = controlling || now < lingerUntil || bubbleShowing || now < cursor.countdownEnds
+            // The service's own cursors (demo, tours) never claim control.
+            let isLocal = cursor.state["local"] as? Bool ?? false
             if active {
                 cursor.lastActivity = max(cursor.lastActivity, now)
-                if controlling && (bannerSession == nil || controlling) { bannerSession = cursor }
-                else if bannerSession == nil && now < lingerUntil { bannerSession = cursor }
+                if !isLocal {
+                    if controlling { bannerSession = cursor }
+                    else if bannerSession == nil && now < lingerUntil { bannerSession = cursor }
+                }
             }
 
             if let flight = cursor.flight {

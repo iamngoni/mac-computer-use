@@ -264,6 +264,7 @@ final class CoreContractTests: XCTestCase {
                 "ask_user",
                 "pick_element",
                 "wait_for_user",
+                "guide",
                 "health_report",
             ]
         )
@@ -667,6 +668,43 @@ final class CoreContractTests: XCTestCase {
         XCTAssertNil(parseElementIndex(nil) ?? nil)
         XCTAssertNil(parseElementIndex("-1"))
         XCTAssertNil(parseElementIndex(true))
+    }
+
+    func testToursRoundTripAndMatchElementsBySemanticsNotPixels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("maccu-tours-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let locator = TourLocator(
+            bundleID: "com.example.mail", appName: "Mail", windowTitle: "Inbox",
+            role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: nil
+        )
+        let tour = TourFile(name: "Archive mail", title: "Archive an email", createdAt: Date(timeIntervalSince1970: 0),
+                            steps: [TourStep(instruction: "Click Archive", locator: locator)])
+        let url = try TourStore.save(tour, in: directory)
+        XCTAssertEqual(url.lastPathComponent, "Archive-mail.json")
+        XCTAssertEqual(TourStore.all(in: directory), [tour])
+        XCTAssertNil(TourStore.fileName(for: "../../"))
+        XCTAssertEqual(TourStore.fileName(for: "a/b c"), "ab-c.json")
+
+        let archive = TourCandidate(role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: nil)
+        let delete = TourCandidate(role: "AXButton", subrole: nil, title: "Delete", description: nil, identifier: nil)
+        XCTAssertTrue(tourCandidate(archive, matches: locator))
+        XCTAssertFalse(tourCandidate(delete, matches: locator))
+        var byIdentifier = locator
+        byIdentifier.identifier = "archive-button"
+        XCTAssertTrue(tourCandidate(
+            TourCandidate(role: "AXButton", subrole: nil, title: "Archiver", description: nil, identifier: "archive-button"),
+            matches: byIdentifier
+        ))
+        XCTAssertFalse(tourCandidate(
+            TourCandidate(role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: "other"),
+            matches: byIdentifier
+        ))
+    }
+
+    func testAgentPreviewKeepsTheWindowShapeWithinItsCorner() {
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 1200, height: 800)), CGSize(width: 300, height: 200))
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 800, height: 1600)), CGSize(width: 100, height: 200))
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 200, height: 100)), CGSize(width: 200, height: 100))
     }
 
     func testCursorFadesOutOnlyAfterTheIdleDelay() {

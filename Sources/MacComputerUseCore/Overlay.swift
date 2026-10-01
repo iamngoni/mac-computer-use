@@ -180,6 +180,11 @@ public struct AutomationStatusBarActions {
     public let isPaused: () -> Bool
     public let setPaused: (Bool) -> Void
     public let sessions: () -> [ServiceSessionSummary]
+    public let agentPreviewEnabled: () -> Bool
+    public let setAgentPreviewEnabled: (Bool) -> Void
+    public let tours: () -> [(name: String, title: String)]
+    public let playTour: (String) -> Void
+    public let openToursFolder: () -> Void
 
     public init(
         version: String,
@@ -190,7 +195,12 @@ public struct AutomationStatusBarActions {
         quit: @escaping () -> Void,
         isPaused: @escaping () -> Bool = { false },
         setPaused: @escaping (Bool) -> Void = { _ in },
-        sessions: @escaping () -> [ServiceSessionSummary] = { [] }
+        sessions: @escaping () -> [ServiceSessionSummary] = { [] },
+        agentPreviewEnabled: @escaping () -> Bool = { false },
+        setAgentPreviewEnabled: @escaping (Bool) -> Void = { _ in },
+        tours: @escaping () -> [(name: String, title: String)] = { [] },
+        playTour: @escaping (String) -> Void = { _ in },
+        openToursFolder: @escaping () -> Void = {}
     ) {
         self.version = version
         self.setup = setup
@@ -201,6 +211,11 @@ public struct AutomationStatusBarActions {
         self.isPaused = isPaused
         self.setPaused = setPaused
         self.sessions = sessions
+        self.agentPreviewEnabled = agentPreviewEnabled
+        self.setAgentPreviewEnabled = setAgentPreviewEnabled
+        self.tours = tours
+        self.playTour = playTour
+        self.openToursFolder = openToursFolder
     }
 }
 
@@ -241,6 +256,12 @@ final class AutomationStatusBarController {
 
     var isActive: Bool { statusItem.button != nil }
 
+    /// Where the menu-bar item is on screen (Cocoa), for the cursor demo.
+    var buttonFrame: CGRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
     func update(
         currentApp: String?,
         controlledApps: [String]
@@ -257,6 +278,8 @@ final class AutomationStatusBarController {
             presentation.statusTitle,
             actions?.canCheckForUpdates() == true ? "updates-enabled" : "updates-disabled",
             paused ? "paused" : "running",
+            actions?.agentPreviewEnabled() == true ? "preview" : "no-preview",
+            (actions?.tours() ?? []).map(\.name).joined(separator: ","),
         ] + presentation.controlledAppTitles + ["|"] + clients).joined(separator: "\u{1f}")
         guard signature != lastSignature else { return }
         lastSignature = signature
@@ -316,6 +339,14 @@ final class AutomationStatusBarController {
             )
             pause.target = self
             menu.addItem(pause)
+            let preview = NSMenuItem(
+                title: "Show Agent Preview",
+                action: #selector(togglePreview),
+                keyEquivalent: ""
+            )
+            preview.target = self
+            preview.state = actions.agentPreviewEnabled() ? .on : .off
+            menu.addItem(preview)
 
             menu.addItem(.separator())
             let clientsHeading = NSMenuItem(title: "Connected clients", action: nil, keyEquivalent: "")
@@ -328,6 +359,27 @@ final class AutomationStatusBarController {
             }
 
             menu.addItem(.separator())
+            let toursItem = NSMenuItem(title: "Guided Tours", action: nil, keyEquivalent: "")
+            let toursMenu = NSMenu(title: "Guided Tours")
+            let tours = actions.tours()
+            if tours.isEmpty {
+                let none = NSMenuItem(title: "No saved tours yet", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                toursMenu.addItem(none)
+            }
+            for tour in tours {
+                let item = NSMenuItem(title: tour.title, action: #selector(playTour(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = tour.name
+                toursMenu.addItem(item)
+            }
+            toursMenu.addItem(.separator())
+            let folder = NSMenuItem(title: "Open Tours Folder…", action: #selector(openToursFolder), keyEquivalent: "")
+            folder.target = self
+            toursMenu.addItem(folder)
+            toursItem.submenu = toursMenu
+            menu.addItem(toursItem)
+
             let setup = NSMenuItem(
                 title: "Setup Mac Computer Use…",
                 action: #selector(openSetup),
@@ -374,6 +426,15 @@ final class AutomationStatusBarController {
     }
 
     @objc private func openSetup() { actions?.setup() }
+    @objc private func playTour(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        actions?.playTour(name)
+    }
+    @objc private func openToursFolder() { actions?.openToursFolder() }
+    @objc private func togglePreview() {
+        guard let actions else { return }
+        actions.setAgentPreviewEnabled(!actions.agentPreviewEnabled())
+    }
     @objc private func togglePause() {
         guard let actions else { return }
         actions.setPaused(!actions.isPaused())
@@ -435,6 +496,8 @@ public final class AutomationStatusBarCoordinator {
     }
 
     public var isActive: Bool { statusBarController?.isActive == true }
+
+    public var statusItemFrame: CGRect? { statusBarController?.buttonFrame }
 
     public func update(currentApp: String?, controlledApps: [String]) {
         let now = CACurrentMediaTime()

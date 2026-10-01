@@ -91,6 +91,14 @@ final class SetupWindowController: NSWindowController {
             buttonTitle: "Grant Access",
             action: #selector(requestScreenRecording)
         ))
+        root.setCustomSpacing(8, after: root.arrangedSubviews.last!)
+        let demoRow = horizontalRow()
+        let demoText = NSTextField(wrappingLabelWithString: "See how an agent’s cursor appears on your screen.")
+        demoText.textColor = .secondaryLabelColor
+        demoText.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        demoRow.addArrangedSubview(demoText)
+        demoRow.addArrangedSubview(button("Test Cursor", action: #selector(testCursor)))
+        root.addArrangedSubview(demoRow)
 
         root.addArrangedSubview(sectionTitle("MCP clients"))
         for client in SupportedMCPClient.allCases {
@@ -170,6 +178,13 @@ final class SetupWindowController: NSWindowController {
             allowedClientsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: allowedClientsStack.widthAnchor).isActive = true
         }
+    }
+
+    var statusItemFrame: () -> CGRect? = { nil }
+
+    @objc private func testCursor() {
+        window?.orderOut(nil)
+        serviceHost?.runCursorDemo(statusItemFrame: statusItemFrame())
     }
 
     @objc private func revokeClient(_ sender: RevokeButton) {

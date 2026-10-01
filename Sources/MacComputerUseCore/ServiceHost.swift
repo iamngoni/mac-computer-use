@@ -126,6 +126,87 @@ final class ActiveInteraction {
     }
 }
 
+func primaryScreenCenterQuartz() -> CGPoint {
+    let frame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
+    return CGPoint(x: frame.midX, y: primaryScreen().frame.height - frame.midY)
+}
+
+/// Plays a saved tour step by step with the service's own cursor.
+@MainActor
+final class TourPlayback {
+    static let sessionID = "tour"
+    private let tour: TourFile
+    private let pid: pid_t
+    private weak var presenter: ServiceOverlayPresenter?
+    private let onFinish: () -> Void
+    private var watch: HandoffWatch?
+    private var index = 0
+    private var finished = false
+
+    init(tour: TourFile, pid: pid_t, presenter: ServiceOverlayPresenter, onFinish: @escaping () -> Void) {
+        self.tour = tour
+        self.pid = pid
+        self.presenter = presenter
+        self.onFinish = onFinish
+    }
+
+    func start() { runStep() }
+
+    func cancel() {
+        guard !finished else { return }
+        watch?.stop()
+        presenter?.showBubble(sessionID: Self.sessionID, text: "Tour stopped", style: .tag, holdSeconds: 1)
+        finish()
+    }
+
+    private func finish() {
+        finished = true
+        watch = nil
+        onFinish()
+    }
+
+    private func runStep() {
+        guard !finished, let presenter else { return }
+        guard index < tour.steps.count else {
+            presenter.showBubble(sessionID: Self.sessionID, text: "All done!", style: .done, holdSeconds: 1.5)
+            finish()
+            return
+        }
+        let step = tour.steps[index]
+        guard let element = findTourElement(step.locator, pid: pid), let frame = axFrame(element) else {
+            let wanted = step.locator.title ?? step.locator.description ?? "the next item"
+            presenter.moveLocalCursor(sessionID: Self.sessionID, name: tour.title, to: primaryScreenCenterQuartz(), pace: .teach, linger: 0.5)
+            presenter.showBubble(
+                sessionID: Self.sessionID,
+                text: "Couldn’t find “\(wanted)” in \(step.locator.appName). It may look different now.",
+                style: .nudge,
+                holdSeconds: 4
+            )
+            finish()
+            return
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        presenter.moveLocalCursor(sessionID: Self.sessionID, name: tour.title, to: point, pace: .teach, linger: 0.5)
+        presenter.showBubble(
+            sessionID: Self.sessionID,
+            text: "Step \(index + 1) of \(tour.steps.count): \(step.instruction)",
+            style: .handoff,
+            holdSeconds: nil
+        )
+        watch = HandoffWatch(
+            target: frame,
+            onInside: { [weak self] in
+                guard let self else { return }
+                self.index += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    MainActor.assumeIsolated { self.runStep() }
+                }
+            },
+            onOutside: { [weak presenter] in presenter?.shake(sessionID: Self.sessionID) }
+        )
+    }
+}
+
 /// Legacy overlay folders are named `mac-computer-use-overlay-<owner pid>-<uuid>`.
 func staleLegacyOverlayChannelNames(_ names: [String], isAlive: (pid_t) -> Bool) -> [String] {
     let prefix = "mac-computer-use-overlay-"
@@ -144,6 +225,7 @@ public final class ServiceHost {
     private let environment: [String: String]
     private let approvals: ClientApprovalStore
     private let presenter: ServiceOverlayPresenter?
+    private let agentCam: AgentCam?
     private var listenDescriptor: Int32 = -1
     private var sessions: [String: ServiceSession] = [:]
     private var acceptingConnections = false
@@ -174,9 +256,11 @@ public final class ServiceHost {
             presenter = nil
             log("virtual cursor runtime assets are missing; the service will run without an overlay")
         }
+        agentCam = presenter == nil ? nil : AgentCam(captureVisible: environment["MACCU_CAPTURE_OVERLAY"] == "1")
         presenter?.onWindowsChanged = { [weak self] identifiers in
             self?.broadcast(["type": "overlay_windows", "ids": identifiers.map { Int($0) }])
         }
+        agentCam?.onWindowsChanged = { [weak self] in self?.refreshExtraWindows() }
     }
 
     // MARK: Lifecycle
@@ -223,6 +307,7 @@ public final class ServiceHost {
             kill(session.workerPID, SIGTERM)
         }
         sessions.removeAll()
+        agentCam?.hide()
         presenter?.removeAll()
         for monitor in keyMonitors { NSEvent.removeMonitor(monitor) }
         keyMonitors.removeAll()
@@ -279,6 +364,100 @@ public final class ServiceHost {
         broadcast(["type": "pause", "paused": paused])
         presenter?.setPaused(paused)
         notifyChange()
+    }
+
+    // MARK: Guided tours
+
+    private var tourPlayback: TourPlayback?
+
+    public var savedTours: [TourFile] { TourStore.all() }
+
+    /// Replays a saved tour with the service's own cursor. The person asked
+    /// for it from the menu, so the app is opened and brought forward.
+    public func playTour(named name: String) {
+        guard let presenter, tourPlayback == nil,
+              let tour = TourStore.all().first(where: { $0.name == name }),
+              let locator = tour.steps.first?.locator else { return }
+        let bundleID = locator.bundleID
+        func launchAndPlay(attempt: Int) {
+            let running = bundleID.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
+                ?? NSWorkspace.shared.runningApplications.first { $0.localizedName == locator.appName }
+            if let running {
+                running.activate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        let playback = TourPlayback(tour: tour, pid: running.processIdentifier, presenter: presenter) { [weak self] in
+                            self?.tourPlayback = nil
+                        }
+                        self.tourPlayback = playback
+                        playback.start()
+                    }
+                }
+                return
+            }
+            if attempt == 0, let bundleID, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+            }
+            guard attempt < 16 else {
+                presenter.moveLocalCursor(sessionID: TourPlayback.sessionID, name: tour.title, to: primaryScreenCenterQuartz(), pace: .teach, linger: 0.5)
+                presenter.showBubble(sessionID: TourPlayback.sessionID, text: "Couldn’t open \(locator.appName) for this tour.", style: .nudge, holdSeconds: 3)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated { launchAndPlay(attempt: attempt + 1) }
+            }
+        }
+        launchAndPlay(attempt: 0)
+    }
+
+    public func openToursFolder() {
+        let directory = TourStore.directory()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(directory)
+    }
+
+    // MARK: Cursor demo
+
+    /// Setup's "Test cursor": the cursor appears mid-screen, flies to the menu
+    /// bar item and explains itself, then fades like any idle agent cursor.
+    public func runCursorDemo(statusItemFrame: CGRect?) {
+        guard let presenter else { return }
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let primaryHeight = primaryScreen().frame.height
+        func quartz(_ cocoa: CGPoint) -> CGPoint { CGPoint(x: cocoa.x, y: primaryHeight - cocoa.y) }
+        let center = screen.map { CGPoint(x: $0.visibleFrame.midX, y: $0.visibleFrame.midY) } ?? .zero
+        let target = statusItemFrame.map { CGPoint(x: $0.midX, y: $0.minY - 6) }
+            ?? CGPoint(x: center.x + 240, y: center.y + 160)
+        let id = "demo"
+        presenter.removeSession(id)
+        presenter.moveLocalCursor(sessionID: id, name: "Mac Computer Use", to: quartz(center), pace: .teach, linger: 6)
+        let ready = AXIsProcessTrusted() && CGPreflightScreenCaptureAccess()
+        presenter.showBubble(
+            sessionID: id,
+            text: ready
+                ? "This is how an agent’s cursor looks. It never moves your pointer."
+                : "Grant Accessibility and Screen Recording in Setup first.",
+            style: ready ? .teach : .nudge,
+            holdSeconds: 2.2
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let presenter = self?.presenter else { return }
+                presenter.moveLocalCursor(sessionID: id, name: "Mac Computer Use", to: quartz(target), pace: .teach, linger: 5)
+                let flight = presenter.flightDuration(sessionID: id, to: quartz(target), pace: .teach)
+                DispatchQueue.main.asyncAfter(deadline: .now() + flight + 0.1) {
+                    MainActor.assumeIsolated {
+                        presenter.showBubble(
+                            sessionID: id,
+                            text: "Pause, resume or quit agents from here. Esc stops them.",
+                            style: .teach,
+                            holdSeconds: 3
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Connections
@@ -449,6 +628,7 @@ public final class ServiceHost {
             finishInteraction(interaction, respond: nil)
         }
         presenter?.removeSession(sessionID)
+        agentCam?.sessionEnded(sessionID)
         log("session \(sessionID) ended for \(session.client.displayName)")
         notifyChange()
     }
@@ -461,6 +641,16 @@ public final class ServiceHost {
             session.lingerUntil = message["lingerUntil"] as? Double ?? 0
             if let app = message["current_app"] as? String, !app.isEmpty { session.currentApp = app }
             presenter?.update(sessionID: sessionID, state: message)
+            if let presenter, let agentCam {
+                agentCam.observe(
+                    sessionID: sessionID,
+                    windowID: (message["window_id"] as? NSNumber).map { CGWindowID($0.uint32Value) },
+                    title: [session.client.displayName, session.currentApp].compactMap { $0 }.joined(separator: " · "),
+                    active: session.isActive(now: CACurrentMediaTime()) || presenter.cursorPoint(for: sessionID) != nil,
+                    isVisible: { [weak presenter] id in presenter?.cursorPoint(for: id) != nil },
+                    cursor: { [weak presenter] id in presenter?.cursorPoint(for: id) }
+                )
+            }
             notifyChange()
             scheduleRefresh(at: session.lingerUntil)
         case "busy":
@@ -603,7 +793,20 @@ public final class ServiceHost {
             }
         }
         interactions.append(interaction)
-        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() })
+        refreshExtraWindows()
+    }
+
+    private func refreshExtraWindows() {
+        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() } + (agentCam?.panelWindowID.map { [$0] } ?? []))
+    }
+
+    public var agentPreviewEnabled: Bool {
+        get { AgentCamPreference.isEnabled }
+        set {
+            AgentCamPreference.isEnabled = newValue
+            if !newValue { agentCam?.hide() }
+            notifyChange()
+        }
     }
 
     /// Ends an interaction once: dismisses its surface, and replies to the
@@ -619,7 +822,7 @@ public final class ServiceHost {
             message["id"] = interaction.requestID
             session.control.send(message)
         }
-        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() })
+        refreshExtraWindows()
     }
 
     // MARK: Approval
@@ -708,6 +911,10 @@ public final class ServiceHost {
     }
 
     private func escapePressed() {
+        if let tourPlayback {
+            tourPlayback.cancel()
+            return
+        }
         // Esc first dismisses whatever the agent asked the person.
         if let latest = interactions.last {
             finishInteraction(latest, respond: ["outcome": "cancelled"])
