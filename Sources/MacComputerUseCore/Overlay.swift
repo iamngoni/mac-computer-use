@@ -72,8 +72,8 @@ func menuBarPresentation(
 }
 
 public struct AutomationCursorAssets {
-    public static let canvasSize = CGSize(width: 36, height: 36)
-    public static let pointerHotspot = CGPoint(x: 8, y: 7.5)
+    public static let canvasSize = CGSize(width: 28, height: 28)
+    public static let pointerHotspot = CGPoint(x: 6.75, y: 6.5)
 
     public let pointer: NSImage
     public let pulse: NSImage
@@ -588,7 +588,7 @@ final class AutomationCursorView: NSView {
         context.saveGState()
         context.setShadow(
             offset: .zero,
-            blur: 2.5 * pulse.scale,
+            blur: 2 * pulse.scale,
             color: NSColor.white.withAlphaComponent(pulse.opacity).cgColor
         )
         assets.pointer.draw(
@@ -602,7 +602,7 @@ final class AutomationCursorView: NSView {
 }
 
 func makeAutomationCursorPanel(
-    size: CGFloat = 72,
+    size: CGFloat = 48,
     assets: AutomationCursorAssets = .emptyForTesting
 ) -> AutomationCursorPanel {
     let panel = AutomationCursorPanel(

@@ -245,15 +245,79 @@ final class CoreContractTests: XCTestCase {
     }
 
     func testCursorAssetGeometryAlignsPointerHotspotToAutomationCoordinate() {
-        let bounds = CGRect(x: 0, y: 0, width: 72, height: 72)
+        let bounds = CGRect(x: 0, y: 0, width: 48, height: 48)
         XCTAssertEqual(
             cursorPointerDrawRect(in: bounds),
-            CGRect(x: 28, y: 7.5, width: 36, height: 36)
+            CGRect(x: 17.25, y: 2.5, width: 28, height: 28)
         )
         XCTAssertEqual(
             cursorPulseDrawRect(in: bounds, scale: 1),
-            CGRect(x: 18, y: 18, width: 36, height: 36)
+            CGRect(x: 10, y: 10, width: 28, height: 28)
         )
+    }
+
+    func testShippedPointerArtMatchesTheDocumentedCanvasAndHotspot() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let assets = try XCTUnwrap(
+            AutomationCursorAssets.load(
+                resourceRoot: repositoryRoot.appendingPathComponent("Assets", isDirectory: true)
+            ),
+            "The shipped VirtualCursor assets should load at every scale."
+        )
+        XCTAssertEqual(assets.pointer.size, AutomationCursorAssets.canvasSize)
+
+        let scale = 4
+        let width = Int(AutomationCursorAssets.canvasSize.width) * scale
+        let height = Int(AutomationCursorAssets.canvasSize.height) * scale
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: width,
+                pixelsHigh: height,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        )
+        bitmap.size = AutomationCursorAssets.canvasSize
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        assets.pointer.draw(
+            in: CGRect(origin: .zero, size: AutomationCursorAssets.canvasSize),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        NSGraphicsContext.restoreGraphicsState()
+
+        func alpha(atPointX x: CGFloat, y: CGFloat) throws -> CGFloat {
+            try XCTUnwrap(bitmap.colorAt(x: Int(x * CGFloat(scale)), y: Int(y * CGFloat(scale)))).alphaComponent
+        }
+        let hotspot = AutomationCursorAssets.pointerHotspot
+        // Just inside the apex is solid pointer; just outside it is clear, so the
+        // automation coordinate sits on the visible tip rather than in padding.
+        XCTAssertGreaterThan(try alpha(atPointX: hotspot.x + 1.25, y: hotspot.y + 1.0), 0.95)
+        XCTAssertLessThan(try alpha(atPointX: hotspot.x - 2.5, y: hotspot.y - 2.5), 0.25)
+    }
+
+    func testAutomationCursorStaysCompactAndFitsItsPanelWithoutClippingTheGlow() {
+        // The pointer should stay near system-cursor scale, not dominate the screen.
+        XCTAssertLessThanOrEqual(AutomationCursorAssets.canvasSize.width, 32)
+        XCTAssertLessThanOrEqual(AutomationCursorAssets.canvasSize.height, 32)
+
+        let panel = makeAutomationCursorPanel()
+        defer { panel.close() }
+        let bounds = CGRect(origin: .zero, size: panel.frame.size)
+        XCTAssertTrue(bounds.contains(cursorPointerDrawRect(in: bounds)))
+        XCTAssertTrue(bounds.contains(cursorPulseDrawRect(in: bounds, scale: 1)))
     }
 
     func testCursorAssetClickMotionUsesAuthoredCompressionAndReboundTiming() {

@@ -79,12 +79,12 @@ class MCPContractTests(unittest.TestCase):
             / "VirtualCursor"
         )
         expected = {
-            "cursor-pointer.png": (36, 36),
-            "cursor-pointer@2x.png": (72, 72),
-            "cursor-pointer@3x.png": (108, 108),
-            "cursor-pulse.png": (36, 36),
-            "cursor-pulse@2x.png": (72, 72),
-            "cursor-pulse@3x.png": (108, 108),
+            "cursor-pointer.png": (28, 28),
+            "cursor-pointer@2x.png": (56, 56),
+            "cursor-pointer@3x.png": (84, 84),
+            "cursor-pulse.png": (28, 28),
+            "cursor-pulse@2x.png": (56, 56),
+            "cursor-pulse@3x.png": (84, 84),
         }
         for name, dimensions in expected.items():
             path = resource_dir / name
