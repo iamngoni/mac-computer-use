@@ -637,8 +637,14 @@ func toolDefinitions() -> [ToolDefinition] {
         ),
         ToolDefinition(
             name: "open_app",
-            description: "Launch an app (or activate it if already running). Works for any macOS app — browsers, Music, Notes, etc. Use this to switch focus to an app before interacting, or to start one that isn't open.",
-            inputSchema: obj(["app": app], ["app"]),
+            description: "Launch an app that isn't running, or bring a running one to the front. You do not need this to interact with a running app: every other tool works on background apps without taking focus. Set background=true to launch without bringing the app forward (and to leave an already running app where it is).",
+            inputSchema: obj([
+                "app": app,
+                "background": [
+                    "type": "boolean",
+                    "description": "Launch or keep the app in the background instead of activating it. Default false.",
+                ],
+            ], ["app"]),
             handler: toolOpenApp
         ),
         ToolDefinition(

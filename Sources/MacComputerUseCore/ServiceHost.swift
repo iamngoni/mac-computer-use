@@ -337,6 +337,18 @@ final class ServiceOverlayPresenter {
 
 // MARK: - Service host
 
+/// Legacy overlay folders are named `mac-computer-use-overlay-<owner pid>-<uuid>`.
+func staleLegacyOverlayChannelNames(_ names: [String], isAlive: (pid_t) -> Bool) -> [String] {
+    let prefix = "mac-computer-use-overlay-"
+    return names.filter { name in
+        guard name.hasPrefix(prefix) else { return false }
+        let remainder = name.dropFirst(prefix.count)
+        guard let dash = remainder.firstIndex(of: "-"),
+              let owner = pid_t(remainder[..<dash]), owner > 0 else { return false }
+        return !isAlive(owner)
+    }
+}
+
 @MainActor
 public final class ServiceHost {
     private let executablePath: String
@@ -380,6 +392,7 @@ public final class ServiceHost {
     // MARK: Lifecycle
 
     public func start() throws {
+        sweepStaleLegacyOverlayChannels()
         try MacComputerUseRuntime.prepareDirectory(environment: environment)
         let socketPath = MacComputerUseRuntime.socketURL(environment: environment).path
         listenDescriptor = try listenUnixSocket(path: socketPath)
@@ -757,6 +770,16 @@ public final class ServiceHost {
     }
 
     // MARK: Helpers
+
+    /// Removes overlay channel folders left in $TMPDIR by earlier in-process
+    /// sessions whose owner has exited.
+    private func sweepStaleLegacyOverlayChannels() {
+        let directory = FileManager.default.temporaryDirectory
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in staleLegacyOverlayChannelNames(names, isAlive: processIsAlive) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
+    }
 
     private func broadcast(_ message: [String: Any]) {
         for session in sessions.values { session.control.send(message) }

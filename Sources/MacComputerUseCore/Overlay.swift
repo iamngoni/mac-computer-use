@@ -1016,6 +1016,11 @@ final class OverlayController {
         return nil
     }
 
+    /// The in-process overlay agent, whose windows desktop captures exclude.
+    var legacyAgentProcessIdentifier: pid_t? {
+        usesService ? nil : readyAgentPID()
+    }
+
     func agentLeaseIsLive(_ pid: pid_t) -> Bool {
         lock.lock()
         let service = serviceChannel

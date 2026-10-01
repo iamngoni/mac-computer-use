@@ -558,6 +558,20 @@ final class CoreContractTests: XCTestCase {
         XCTAssertEqual(connectedClientTitles([]), [])
     }
 
+    func testServiceSweepsOnlyLegacyOverlayFoldersWhoseOwnerExited() {
+        let names = [
+            "mac-computer-use-overlay-100-aaaa-bbbb",
+            "mac-computer-use-overlay-200-cccc-dddd",
+            "mac-computer-use-overlay-notapid-eeee",
+            "mac-computer-use-update-gate.lock",
+            "unrelated",
+        ]
+        XCTAssertEqual(
+            staleLegacyOverlayChannelNames(names, isAlive: { $0 == 200 }),
+            ["mac-computer-use-overlay-100-aaaa-bbbb"]
+        )
+    }
+
     func testCursorFadesOutOnlyAfterTheIdleDelay() {
         XCTAssertEqual(cursorIdleOpacity(now: 100, lastActivity: 0, active: true), 1)
         XCTAssertEqual(cursorIdleOpacity(now: 7.9, lastActivity: 0, active: false), 1)

@@ -66,7 +66,14 @@ func captureDesktopDisplaySCK(_ displayID: CGDirectDisplayID) -> CGImage? {
         configuration.height = height
         configuration.showsCursor = false
         configuration.scalesToFit = false
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Never show the agent's own cursor or banner to the model.
+        let overlayWindowIDs = Set(WorkerSession.shared.overlayWindowIDs)
+        let legacyAgentPID = OverlayController.shared.legacyAgentProcessIdentifier
+        let overlays = content.windows.filter { window in
+            overlayWindowIDs.contains(window.windowID)
+                || (legacyAgentPID != nil && window.owningApplication?.processID == legacyAgentPID)
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: overlays)
         return try await SCScreenshotManager.captureImage(
             contentFilter: filter,
             configuration: configuration
