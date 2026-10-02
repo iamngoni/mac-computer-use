@@ -50,7 +50,8 @@ APP="$DIST/MacComputerUse.app"
 ZIP="$DIST/MacComputerUse-$VERSION.zip"
 DMG="$DIST/MacComputerUse-$VERSION.dmg"
 FEED_URL="https://github.com/iamngoni/mac-computer-use/releases/latest/download/appcast.xml"
-DOWNLOAD_PREFIX="https://github.com/iamngoni/mac-computer-use/releases/download/$TAG"
+# The trailing slash matters: generate_appcast resolves file names against it.
+DOWNLOAD_PREFIX="https://github.com/iamngoni/mac-computer-use/releases/download/$TAG/"
 
 if [[ -d "$DIST" ]]; then rm -rf "$DIST"; fi
 mkdir -p "$DIST"
@@ -79,6 +80,14 @@ hdiutil create \
   -format UDZO \
   -ov \
   "$DMG"
+# Sign the disk image with the identity that signed the app, so Gatekeeper
+# can assess the DMG itself and not only the stapled ticket.
+signing_identity="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=\(Developer ID Application: .*\)$/\1/p' | head -n 1)"
+dmg_sign_args=(--force --timestamp --sign "$signing_identity")
+if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+  dmg_sign_args+=(--keychain "$SIGNING_KEYCHAIN")
+fi
+codesign "${dmg_sign_args[@]}" "$DMG"
 xcrun notarytool submit "$DMG" "${notary_args[@]}"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
@@ -97,6 +106,10 @@ else
   "$SPARKLE_BIN/generate_appcast" "${appcast_args[@]}" "$appcast_dir"
 fi
 cp "$appcast_dir/appcast.xml" "$DIST/appcast.xml"
+grep -Fq "url=\"${DOWNLOAD_PREFIX}MacComputerUse-$VERSION.zip\"" "$DIST/appcast.xml" || {
+  echo "appcast.xml does not point at ${DOWNLOAD_PREFIX}MacComputerUse-$VERSION.zip" >&2
+  exit 1
+}
 
 sha256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 sed \

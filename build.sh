@@ -54,8 +54,12 @@ mkdir -p \
   "$APP/Contents/Resources/VirtualCursor"
 
 echo "Compiling Swift package for: $BUILD_ARCHS"
+# Some SwiftPM build backends reuse one products directory for every
+# architecture, so each slice is copied aside before the next build.
+ARCH_STAGING=".build/arch-binaries"
+rm -rf "$ARCH_STAGING"
+mkdir -p "$ARCH_STAGING"
 binary_paths=()
-framework_path=""
 for arch in $BUILD_ARCHS; do
   swift build \
     -c release \
@@ -63,9 +67,14 @@ for arch in $BUILD_ARCHS; do
     --product "$EXECUTABLE" \
     -Xswiftc -warnings-as-errors
   bin_dir="$(swift build -c release --arch "$arch" --show-bin-path)"
-  binary_paths+=("$bin_dir/$EXECUTABLE")
-  if [[ -z "$framework_path" ]]; then
-    framework_path="$bin_dir/Sparkle.framework"
+  if ! lipo -archs "$bin_dir/$EXECUTABLE" | tr ' ' '\n' | grep -Fxq "$arch"; then
+    echo "The $arch build did not produce a $arch binary." >&2
+    exit 1
+  fi
+  cp "$bin_dir/$EXECUTABLE" "$ARCH_STAGING/$EXECUTABLE-$arch"
+  binary_paths+=("$ARCH_STAGING/$EXECUTABLE-$arch")
+  if [[ ! -d "$APP/Contents/Frameworks/Sparkle.framework" ]]; then
+    ditto "$bin_dir/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
   fi
 done
 
@@ -74,7 +83,6 @@ if [[ ${#binary_paths[@]} -eq 1 ]]; then
 else
   lipo -create "${binary_paths[@]}" -output "$APP/Contents/MacOS/$EXECUTABLE"
 fi
-ditto "$framework_path" "$APP/Contents/Frameworks/Sparkle.framework"
 cp .build/checkouts/Sparkle/LICENSE "$APP/Contents/Resources/Licenses/Sparkle-LICENSE.txt"
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
