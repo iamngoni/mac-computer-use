@@ -69,6 +69,8 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             sessions: { [weak host] in host?.sessionSummaries ?? [] },
             agentPreviewEnabled: { [weak host] in host?.agentPreviewEnabled == true },
             setAgentPreviewEnabled: { [weak host] enabled in host?.agentPreviewEnabled = enabled },
+            voiceEnabled: { [weak host] in host?.voiceEnabled == true },
+            setVoiceEnabled: { [weak host] enabled in host?.voiceEnabled = enabled },
             tours: { [weak host] in (host?.savedTours ?? []).map { (name: $0.name, title: $0.title) } },
             playTour: { [weak host] name in host?.playTour(named: name) },
             openToursFolder: { [weak host] in host?.openToursFolder() }

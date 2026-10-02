@@ -151,7 +151,10 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
         let element: AXUIElement?
         let point: CGPoint
         let annotations: [[String: Any]]
+        let speech: String?
     }
+    // speak on the guide reads every step; a step's own speak overrides it.
+    let speakAll = strictJSONBoolean(args["speak"]) == true
     var steps: [PreparedStep] = []
     for (offset, raw) in rawSteps.enumerated() {
         guard let instruction = (raw["instruction"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -172,11 +175,19 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
             case .failed(let message): return toolText("guide step \(offset + 1) annotation: \(message).", isError: true)
             }
         }
+        let shortInstruction = String(instruction.prefix(140))
+        let stepSpeech: String?
+        if raw["speak"] != nil {
+            stepSpeech = spokenText(raw, default: shortInstruction)
+        } else {
+            stepSpeech = speakAll ? shortInstruction : nil
+        }
         steps.append(PreparedStep(
-            instruction: String(instruction.prefix(140)),
+            instruction: shortInstruction,
             element: target.element,
             point: target.point,
-            annotations: annotations
+            annotations: annotations,
+            speech: stepSpeech
         ))
     }
 
@@ -226,6 +237,7 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
             "hold_ms": 0,
         ])
         OverlayController.shared.sendToService(["type": "annotations_clear"])
+        _ = speakAloud(step.speech)
         if !step.annotations.isEmpty {
             let bounds = context.windowBounds
             OverlayController.shared.sendToService([

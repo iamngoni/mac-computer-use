@@ -18,6 +18,7 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 - **Show, ask and hand off.** `point_at`, `annotate`, `ask_user`, `pick_element`, `wait_for_user` and `guide` let an agent explain with the cursor, draw hand-drawn marks and captions, ask a question only your physical click can answer, let you point back at the thing you mean, hand you a password or 2FA step, and walk you through a task.
 - **Human brakes.** Esc pauses every agent until you resume from the menu bar, and interrupted actions return `[user_interrupted]` errors. Pressing something like Send, Delete or Buy first shows a 2-second countdown ring you can stop. Agents wait while you are actively using the same app.
 - **Agent preview.** When an agent works in a window you cannot see, a small live preview with its cursor floats in a corner.
+- **Voice.** `say` speaks to you in the Mac's own on-device voice, and `point_at`, `annotate`, `ask_user`, `wait_for_user` and `guide` take `speak` to read their text aloud (or say something else). Agents' speech queues instead of overlapping, Esc cuts it off, and **Speak Aloud** in the menu bar or setup mutes it; muted calls tell the agent you did not hear them.
 - **Guided tours.** `guide` can save an element-based tour that you replay later from the menu bar, without an agent.
 - **One menu-bar manager.** One status item lists active apps and connected clients, and offers Pause/Resume Agents, Show Agent Preview, Guided Tours, Setup, updates and Quit. Quitting turns automation off until you open the app again.
 - **Native setup.** Opening the app shows permission status, one-click registration for Codex and Claude Code, copyable fallback commands, and a launch-at-login switch.
@@ -61,6 +62,7 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 | `pick_element` | Capture the user's click(s) and return the app, element and, when it is in the last snapshot, its `element_index`. |
 | `wait_for_user` | Hand a step to the user (password, 2FA, permission dialog) and wait for a click or value change. Secure fields are watched by length only. |
 | `guide` | Walk the user through steps that advance when they click each element. `save_as` keeps the tour for replay from the menu bar. |
+| `say` | Say a sentence aloud in the Mac's own voice (on-device). Waits until it finishes unless `wait: false`; returns `[voice_muted]` when the user turned Speak Aloud off. |
 | `health_report` | Return JSON diagnostics for permissions (and which app they are attributed to), process and service session, overlay, input policy, and app/window discovery. |
 
 ### Click methods

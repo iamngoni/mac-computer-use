@@ -130,6 +130,47 @@ private func trimmedText(_ args: [String: Any], _ key: String, limit: Int) -> St
     return String(text.prefix(limit))
 }
 
+// MARK: - Voice
+
+let voiceMutedResult = toolText(
+    "[voice_muted] Speak Aloud is off in Mac Computer Use, so the user did not hear this. Say it in chat instead.",
+    isError: true
+)
+
+/// Speaks a tool's text without waiting, and returns a note for its result
+/// that says honestly whether the user could hear it.
+func speakAloud(_ text: String?) -> String {
+    guard let text else { return "" }
+    guard WorkerSession.shared.isVoiceEnabled else {
+        return " Speak Aloud is off in Mac Computer Use, so nothing was spoken."
+    }
+    OverlayController.shared.sendToService(["type": "speak", "text": text])
+    return " Also spoken aloud."
+}
+
+func toolSay(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("say") }
+    guard let text = trimmedText(args, "text", limit: 400) else { return toolText("say needs text.", isError: true) }
+    guard WorkerSession.shared.isVoiceEnabled else { return voiceMutedResult }
+    let wait = strictJSONBoolean(args["wait"]) ?? true
+    // Speech runs at roughly 15 characters a second; leave room for slow voices.
+    let timeout = 10 + Double(text.count) / 6
+    switch WorkerSession.shared.interact("say", ["text": text, "wait": wait], timeout: timeout) {
+    case .response(let response):
+        switch response["outcome"] as? String {
+        case "muted": return voiceMutedResult
+        case "started": return toolText("Speaking aloud: “\(text)”. Not waiting for it to finish.")
+        default: return toolText("Said aloud: “\(text)”.")
+        }
+    case .cancelled:
+        return toolText("[user_interrupted] The user stopped the speech with Esc. Stop and ask the user before continuing.", isError: true)
+    case .timedOut:
+        return toolText("[timeout] The speech did not finish within \(Int(timeout)) s and was stopped.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("say")
+    }
+}
+
 // MARK: - point_at
 
 func toolPointAt(_ args: [String: Any]) -> [String: Any] {
@@ -152,8 +193,9 @@ func toolPointAt(_ args: [String: Any]) -> [String: Any] {
     if let label {
         OverlayController.shared.sendToService(["type": "bubble", "text": label, "style": "teach", "hold_ms": hold])
     }
+    let spoken = speakAloud(spokenText(args, default: label))
     let shown = label.map { " with “\($0)”" } ?? ""
-    return toolText("Pointing at \(target.summary)\(shown) for \(String(format: "%.1f", Double(hold) / 1000)) s. Nothing was clicked.")
+    return toolText("Pointing at \(target.summary)\(shown) for \(String(format: "%.1f", Double(hold) / 1000)) s. Nothing was clicked.\(spoken)")
 }
 
 // MARK: - annotate
@@ -258,7 +300,8 @@ func toolAnnotate(_ args: [String: Any]) -> [String: Any] {
         "window_id": Int(context.windowId),
         "window_bounds": [Double(bounds.minX), Double(bounds.minY), Double(bounds.width), Double(bounds.height)],
     ])
-    return toolText("Drew \(converted.count) annotation(s) over \(context.appLabel) for \(duration / 1000) s. They clear early if the window moves; clear_annotations removes them.")
+    let spoken = speakAloud(spokenText(args, default: trimmedText(args, "caption", limit: 200)))
+    return toolText("Drew \(converted.count) annotation(s) over \(context.appLabel) for \(duration / 1000) s. They clear early if the window moves; clear_annotations removes them.\(spoken)")
 }
 
 /// Points that must be visible for an annotation set to make sense.
@@ -293,6 +336,7 @@ func toolAskUser(_ args: [String: Any]) -> [String: Any] {
     }
     let timeout = Double(clampedMilliseconds(args, "timeout_s", default: 120, range: 5...600))
     OverlayController.shared.touchCursor()
+    _ = speakAloud(spokenText(args, default: question))
     switch WorkerSession.shared.interact("ask", ["question": question, "options": options], timeout: timeout) {
     case .response(let response):
         guard let choice = response["choice"] as? String else {
@@ -398,6 +442,7 @@ func toolWaitForUser(_ args: [String: Any]) -> [String: Any] {
     OverlayController.shared.moveCursorQuartz(target.point, pace: .teach)
     OverlayController.shared.sendToService(["type": "bubble", "text": "Your turn: \(instruction)", "style": "handoff", "hold_ms": 0])
     defer { OverlayController.shared.sendToService(["type": "bubble_clear"]) }
+    _ = speakAloud(spokenText(args, default: instruction))
 
     var lastTouch = Date()
     let outcome = WorkerSession.shared.interact(

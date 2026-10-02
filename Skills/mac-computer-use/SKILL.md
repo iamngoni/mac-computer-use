@@ -1,6 +1,6 @@
 ---
 name: mac-computer-use
-description: Operate macOS apps through the Mac Computer Use MCP server (get_app_state, click, type_text, set_value, invoke_menu, navigate, verify_state) and talk to the user through its on-screen cursor (point_at, annotate, ask_user, pick_element, wait_for_user, guide). Use when a task needs to see or control a Mac app's interface, show the user something on screen, ask them to choose or point at something, or hand them a step such as a password, 2FA code or permission dialog.
+description: Operate macOS apps through the Mac Computer Use MCP server (get_app_state, click, type_text, set_value, invoke_menu, navigate, verify_state) and talk to the user through its on-screen cursor and voice (point_at, annotate, ask_user, pick_element, wait_for_user, guide, say). Use when a task needs to see or control a Mac app's interface, show the user something on screen, ask them to choose or point at something, or hand them a step such as a password, 2FA code or permission dialog.
 ---
 
 # Mac Computer Use
@@ -35,6 +35,12 @@ App tools work on background apps and do not move the user's real pointer. `get_
 - `wait_for_user`: hand over a step you must not do yourself, such as passwords, 2FA codes, payment details, CAPTCHAs and permission dialogs. Point at the element with an instruction and wait for the user to finish. Never type secrets yourself.
 - `guide`: walk the user through a task one step at a time. Pass `save_as` to keep the tour so they can replay it from the Mac Computer Use menu.
 
+## Speaking aloud
+
+- `say(text)`: speak a sentence or two in the Mac's own voice. Use it at moments that matter (starting a long task, needing attention, finishing), not for every step. It waits until the speech ends unless you pass `wait: false`.
+- `speak` on `point_at`, `annotate`, `ask_user`, `wait_for_user` and `guide` (or on a single guide step): `true` reads that tool's label, caption, question or instruction aloud; a string says that instead.
+- The user can mute speech with Speak Aloud. Then `say` returns `[voice_muted]` and other tools note that nothing was spoken; tell them in chat instead. Esc stops speech like any other action.
+
 ## Safety the app enforces
 
 - **Risky clicks.** Before pressing something like Send, Delete, Buy, Submit, Publish or Sign Out, the cursor rests on it with a short countdown so the user can stop it with Esc. Get the user's go-ahead in chat for anything irreversible, and `point_at` the control first.
@@ -54,6 +60,7 @@ App tools work on background apps and do not move the user's real pointer. `get_
 | `[service_disconnected]` | The app restarted mid-call; the action may or may not have happened. Call `get_app_state` before retrying. |
 | `[updating]` | An update is installing. Retry in a few seconds. |
 | `[timeout]`, `[user_dismissed]` | The user did not answer. Do not assume an answer; ask in chat or stop. |
+| `[voice_muted]` | Speak Aloud is off, so the user did not hear you. Say it in chat. |
 | `[requires_service]` | The server runs in-process without the overlay; cursor tools are unavailable. Continue without them. |
 
 When something looks like a permission problem, call `health_report` and tell the user which permission (Accessibility or Screen Recording) to grant in Mac Computer Use Setup. Never try to change system settings yourself.

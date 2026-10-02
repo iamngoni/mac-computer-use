@@ -41,6 +41,7 @@ final class WorkerSession: @unchecked Sendable {
     private var approval = "pending"
     private var approvalRequested = false
     private var paused = false
+    private var voiceEnabled = true
     private var overlayWindows: [CGWindowID] = []
     private var sessionInfo: [String: Any] = [:]
     private var nextRequestID = 1
@@ -54,6 +55,12 @@ final class WorkerSession: @unchecked Sendable {
     var isPaused: Bool {
         condition.lock(); defer { condition.unlock() }
         return paused
+    }
+
+    /// Whether the service will speak aloud (Speak Aloud is on).
+    var isVoiceEnabled: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return voiceEnabled
     }
 
     var overlayWindowIDs: [CGWindowID] {
@@ -89,6 +96,7 @@ final class WorkerSession: @unchecked Sendable {
         var snapshot = sessionInfo
         snapshot["approval"] = approval
         snapshot["paused"] = paused
+        snapshot["voice"] = voiceEnabled
         snapshot["service_pid"] = Int(getppid())
         snapshot["connected"] = channel?.isOpen == true
         return snapshot
@@ -116,6 +124,9 @@ final class WorkerSession: @unchecked Sendable {
             condition.lock(); paused = isPaused; condition.unlock()
             // Pausing stops the current action; resuming clears the brake.
             cancelFlag.set(isPaused)
+        case "voice":
+            let enabled = message["enabled"] as? Bool ?? true
+            condition.lock(); voiceEnabled = enabled; condition.unlock()
         case "overlay_windows":
             let identifiers = (message["ids"] as? [NSNumber] ?? []).map { CGWindowID($0.uint32Value) }
             condition.lock(); overlayWindows = identifiers; condition.unlock()

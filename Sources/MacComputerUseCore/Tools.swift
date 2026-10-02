@@ -442,6 +442,10 @@ struct ToolDefinition {
 }
 
 func toolDefinitions() -> [ToolDefinition] {
+    let speakOption: [String: Any] = [
+        "type": ["boolean", "string"],
+        "description": "Also say it aloud: true reads this tool's text, a string says that instead. Skipped when the user has turned Speak Aloud off.",
+    ]
     func obj(_ properties: [String: Any], _ required: [String]) -> [String: Any] {
         [
             "type": "object",
@@ -740,6 +744,7 @@ func toolDefinitions() -> [ToolDefinition] {
                     "y": screenshotCoordinate,
                     "label": ["type": "string", "maxLength": 160, "description": "Short text shown beside the cursor."],
                     "hold_ms": ["type": "integer", "minimum": 500, "maximum": 15000, "description": "How long the label stays. Default 4000."],
+                    "speak": speakOption,
                 ],
                 ["app"]
             ),
@@ -772,6 +777,7 @@ func toolDefinitions() -> [ToolDefinition] {
                     ],
                     "caption": ["type": "string", "maxLength": 200, "description": "Subtitle shown along the bottom of the window."],
                     "duration_ms": ["type": "integer", "minimum": 1000, "maximum": 60000, "description": "Default 8000."],
+                    "speak": speakOption,
                 ],
                 ["app"]
             ),
@@ -791,6 +797,7 @@ func toolDefinitions() -> [ToolDefinition] {
                     "question": ["type": "string", "maxLength": 200],
                     "options": ["type": "array", "items": ["type": "string", "maxLength": 40], "minItems": 2, "maxItems": 4],
                     "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                    "speak": speakOption,
                 ],
                 ["question", "options"]
             ),
@@ -821,6 +828,7 @@ func toolDefinitions() -> [ToolDefinition] {
                     "instruction": ["type": "string", "maxLength": 160, "description": "e.g. Enter your password, then click Sign In"],
                     "until": ["type": "string", "enum": ["click", "value_change", "either"], "description": "Default either."],
                     "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                    "speak": speakOption,
                 ],
                 ["app", "instruction"]
             ),
@@ -844,6 +852,7 @@ func toolDefinitions() -> [ToolDefinition] {
                                 "y": number,
                                 "instruction": ["type": "string", "maxLength": 140],
                                 "annotate": ["type": "array", "items": ["type": "object"]],
+                                "speak": speakOption,
                             ],
                             "required": ["instruction"],
                         ],
@@ -851,10 +860,23 @@ func toolDefinitions() -> [ToolDefinition] {
                     "title": ["type": "string", "maxLength": 80],
                     "save_as": ["type": "string", "maxLength": 60, "description": "Name to save the tour under. Every step must use element_index."],
                     "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Per step. Default 120."],
+                    "speak": ["type": "boolean", "description": "Read every step's instruction aloud. A step's own speak overrides it."],
                 ],
                 ["app", "steps"]
             ),
             handler: toolGuide
+        ),
+        ToolDefinition(
+            name: "say",
+            description: "Say something aloud to the user in the Mac's own voice (on-device, no cloud). Use it to narrate what you are doing or to get their attention; keep it to a sentence or two. Speech queues behind other agents', Esc stops it, and when the user has turned Speak Aloud off the result says they did not hear it.",
+            inputSchema: obj(
+                [
+                    "text": ["type": "string", "maxLength": 400],
+                    "wait": ["type": "boolean", "description": "Wait until the speech finishes. Default true."],
+                ],
+                ["text"]
+            ),
+            handler: toolSay
         ),
         ToolDefinition(
             name: "health_report",

@@ -47,6 +47,7 @@ EXPECTED_TOOLS = [
     "pick_element",
     "wait_for_user",
     "guide",
+    "say",
     "health_report",
 ]
 
@@ -227,6 +228,8 @@ class ServiceModeContractTests(unittest.TestCase):
         self.environment["MACCU_RUNTIME_DIR"] = str(self.runtime)
         self.environment["MACCU_TEST_AUTO_APPROVE"] = "1"
         self.environment["MACCU_DISABLE_UPDATES"] = "1"
+        # Speech completes without audio, whatever the user's preference.
+        self.environment["MACCU_VOICE"] = "silent"
         self.service = self.start_service()
         self.clients: list[MCPClient] = []
 
@@ -290,6 +293,28 @@ class ServiceModeContractTests(unittest.TestCase):
 
         listed = client.call_tool("list_apps")
         self.assertFalse(listed.get("isError"), text_content(listed))
+
+    def test_say_speaks_through_the_service(self) -> None:
+        client = self.connect()
+        self.assertTrue(self.health(client)["service"]["voice"])
+        spoken = client.call_tool("say", {"text": "Opening your settings now."})
+        self.assertFalse(spoken.get("isError"), text_content(spoken))
+        self.assertIn("Said aloud", text_content(spoken))
+        started = client.call_tool("say", {"text": "Still working.", "wait": False})
+        self.assertFalse(started.get("isError"), text_content(started))
+        self.assertIn("Not waiting", text_content(started))
+        empty = client.call_tool("say", {"text": "   "})
+        self.assertTrue(empty.get("isError"))
+
+    def test_say_reports_that_the_user_did_not_hear_it_when_voice_is_off(self) -> None:
+        self.stop_service(self.service)
+        self.environment["MACCU_VOICE"] = "off"
+        self.service = self.start_service()
+        client = self.connect()
+        self.assertFalse(self.health(client)["service"]["voice"])
+        muted = client.call_tool("say", {"text": "Hello"})
+        self.assertTrue(muted.get("isError"))
+        self.assertTrue(text_content(muted).startswith("[voice_muted]"), text_content(muted))
 
     def test_worker_exits_when_its_client_disconnects(self) -> None:
         client = self.connect()

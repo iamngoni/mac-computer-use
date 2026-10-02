@@ -20,6 +20,7 @@ final class SetupModel: ObservableObject {
     @Published var denied: [ServiceClientIdentity] = []
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var agentPreview = true
+    @Published var speakAloud = true
     @Published var copiedClient: SupportedMCPClient?
     @Published var errorMessage: String?
 
@@ -33,6 +34,7 @@ final class SetupModel: ObservableObject {
         self.registration = registration
         self.host = host
         agentPreview = host?.agentPreviewEnabled ?? true
+        speakAloud = host?.voiceEnabled ?? true
     }
 
     var permissionsDone: Bool { accessibilityGranted && screenRecordingGranted }
@@ -49,6 +51,7 @@ final class SetupModel: ObservableObject {
         refreshApprovals()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         agentPreview = host?.agentPreviewEnabled ?? agentPreview
+        speakAloud = host?.voiceEnabled ?? speakAloud
     }
 
     /// Permissions change in System Settings, so poll while the window is open.
@@ -185,6 +188,11 @@ final class SetupModel: ObservableObject {
     func setAgentPreview(_ enabled: Bool) {
         host?.agentPreviewEnabled = enabled
         agentPreview = enabled
+    }
+
+    func setSpeakAloud(_ enabled: Bool) {
+        host?.voiceEnabled = enabled
+        speakAloud = enabled
     }
 
     func revoke(_ key: String) {
@@ -671,14 +679,22 @@ struct SetupChecklist: View {
 
             Spacer(minLength: 12)
             Divider().opacity(0.6)
-            HStack(spacing: 18) {
+            HStack(spacing: 12) {
                 Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                     .disabled(Bundle.main.bundleURL.pathExtension != "app")
+                    .fixedSize()
                 Divider().frame(height: 22)
-                Toggle("Show agent preview", isOn: Binding(get: { model.agentPreview }, set: { model.setAgentPreview($0) }))
-                Spacer()
+                Toggle("Agent preview", isOn: Binding(get: { model.agentPreview }, set: { model.setAgentPreview($0) }))
+                    .help("Show a live preview of windows an agent works in behind others")
+                    .fixedSize()
+                Divider().frame(height: 22)
+                Toggle("Speak aloud", isOn: Binding(get: { model.speakAloud }, set: { model.setSpeakAloud($0) }))
+                    .help("Let agents talk to you in the Mac's voice")
+                    .fixedSize()
+                Spacer(minLength: 0)
             }
             .toggleStyle(.switch)
+            .controlSize(.small)
             .font(.system(size: 13))
             .padding(.top, 14)
         }
