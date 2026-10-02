@@ -56,6 +56,8 @@ final class CoreContractTests: XCTestCase {
         let disconnected = relayDisconnectedReply(id: "a", method: "tools/call")
         let disconnectedResult = try XCTUnwrap(disconnected["result"] as? [String: Any])
         XCTAssertTrue((toolResultText(disconnectedResult) ?? "").hasPrefix("[service_disconnected]"))
+        let quit = try XCTUnwrap(relayDisconnectedReply(id: "b", method: "tools/call", stoppedByUser: true)["result"] as? [String: Any])
+        XCTAssertTrue((toolResultText(quit) ?? "").hasPrefix("[stopped_by_user]"), "a call cut off by Quit says the user quit")
         XCTAssertNotNil(relayDisconnectedReply(id: 3, method: "ping")["error"])
     }
 
