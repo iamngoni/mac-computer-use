@@ -39,6 +39,11 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
         } catch {
             NSLog("Mac Computer Use service failed to start: \(error)")
         }
+        // Skills this app installed follow its updates; copies the user
+        // edited or did not install through the app are left alone.
+        DispatchQueue.global(qos: .utility).async {
+            SkillInstallationService.bundled()?.refreshOutdated()
+        }
 
         let setup = SetupWindowController(executableURL: executableURL, serviceHost: host)
         let updater = UpdateCoordinator(

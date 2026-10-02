@@ -15,6 +15,7 @@ final class SetupModel: ObservableObject {
     @Published var accessibilityGranted = AXIsProcessTrusted()
     @Published var screenRecordingGranted = CGPreflightScreenCaptureAccess()
     @Published var clientStates: [SupportedMCPClient: MCPClientRegistrationState] = [:]
+    @Published var skillStates: [SkillTarget: SkillInstallationState] = [:]
     @Published var approved: [ApprovedServiceClient] = []
     @Published var denied: [ServiceClientIdentity] = []
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -23,6 +24,7 @@ final class SetupModel: ObservableObject {
     @Published var errorMessage: String?
 
     let registration: MCPClientRegistrationService
+    let skills = SkillInstallationService.bundled()
     weak var host: ServiceHost?
     var runCursorDemo: () -> Void = {}
     private var timer: Timer?
@@ -43,6 +45,7 @@ final class SetupModel: ObservableObject {
     func refreshAll() {
         refreshPermissions()
         refreshClients()
+        refreshSkills()
         refreshApprovals()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         agentPreview = host?.agentPreviewEnabled ?? agentPreview
@@ -119,6 +122,44 @@ final class SetupModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func refreshSkills() {
+        guard let skills else { return }
+        for target in SkillTarget.allCases {
+            let state = skills.state(for: target)
+            if skillStates[target] != state { skillStates[target] = state }
+        }
+    }
+
+    /// Installs, updates or removes the skill for one agent. Replacing a
+    /// skill this app did not install, or one the user edited, asks first.
+    func toggleSkill(_ target: SkillTarget) {
+        guard let skills else { return }
+        let state = skills.state(for: target)
+        let result: Result<Void, SkillInstallationError>
+        switch state {
+        case .absent, .outdated:
+            result = skills.install(target)
+        case .current:
+            result = skills.remove(target)
+        case .modified, .foreign:
+            guard confirmSkillReplacement(target, edited: state == .modified, skills: skills) else { return }
+            result = skills.install(target, replaceExisting: true)
+        }
+        if case .failure(let error) = result { errorMessage = error.localizedDescription }
+        refreshSkills()
+    }
+
+    private func confirmSkillReplacement(_ target: SkillTarget, edited: Bool, skills: SkillInstallationService) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = edited ? "Replace your edited skill?" : "Replace the existing skill?"
+        alert.informativeText = edited
+            ? "\(skills.displayPath(for: target)) was changed after Mac Computer Use installed it. Your copy will be moved to the Trash."
+            : "\(skills.displayPath(for: target)) was not installed by Mac Computer Use. It will be moved to the Trash."
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func copyCommand(_ client: SupportedMCPClient) {
@@ -585,6 +626,9 @@ struct SetupChecklist: View {
                                   connect: { model.connect(client, replacing: $0) },
                                   copy: { model.copyCommand(client) })
                     }
+                    if let skills = model.skills {
+                        SkillRow(states: model.skillStates, path: skills.displayPath(for:), toggle: model.toggleSkill)
+                    }
                 }
             }
 
@@ -737,6 +781,83 @@ struct PermissionRow: View {
                     .buttonStyle(.borderedProminent)
             }
         }
+    }
+}
+
+/// The agent skill, installable per agent: one chip each for Codex, Claude
+/// Code and the shared ~/.agents/skills folder.
+struct SkillRow: View {
+    let states: [SkillTarget: SkillInstallationState]
+    let path: (SkillTarget) -> String
+    let toggle: (SkillTarget) -> Void
+
+    var body: some View {
+        RowCard {
+            RowIcon(symbol: "book.closed")
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Agent skill").font(.system(size: 13, weight: .medium))
+                Text("Teaches the tools").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            ForEach(SkillTarget.allCases, id: \.self) { target in
+                SkillChip(target: target, state: states[target], path: path(target)) { toggle(target) }
+            }
+        }
+    }
+}
+
+struct SkillChip: View {
+    let target: SkillTarget
+    let state: SkillInstallationState?
+    let path: String
+    let action: () -> Void
+
+    private var label: String { target == .claude ? "Claude" : target.rawValue }
+
+    private var symbol: String {
+        switch state {
+        case .current?: return "checkmark"
+        case .outdated?: return "arrow.clockwise"
+        case .modified?, .foreign?: return "exclamationmark"
+        case .absent?, nil: return "plus"
+        }
+    }
+
+    private var tint: Color {
+        switch state {
+        case .current?: return SetupPalette.success
+        case .outdated?, .modified?, .foreign?: return SetupPalette.warning
+        case .absent?, nil: return .secondary
+        }
+    }
+
+    private var help: String {
+        switch state {
+        case .current?: return "Installed in \(path). Click to remove."
+        case .outdated?: return "An older version is in \(path). Click to update."
+        case .modified?: return "\(path) was edited after install. Click to replace it; your copy goes to the Trash."
+        case .foreign?: return "Another skill is at \(path). Click to replace it; it goes to the Trash."
+        case .absent?, nil: return "Install into \(path)"
+        }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: symbol).font(.system(size: 9, weight: .bold))
+                Text(label).font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(Capsule().fill(tint.opacity(state == .current ? 0.14 : 0)))
+            .overlay(Capsule().stroke(tint.opacity(0.45), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel("\(target.rawValue) skill")
+        .accessibilityValue(state == .current ? "Installed" : "Not installed")
     }
 }
 

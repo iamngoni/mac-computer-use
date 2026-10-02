@@ -83,6 +83,14 @@ class MCPContractTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_agent_skill_and_icon_are_packaged(self) -> None:
+        resources = SERVER_BINARY.parent.parent / "Resources"
+        bundled = resources / "Skills" / "mac-computer-use" / "SKILL.md"
+        source = Path(__file__).resolve().parent.parent / "Skills" / "mac-computer-use" / "SKILL.md"
+        self.assertEqual(source.read_bytes(), bundled.read_bytes())
+        self.assertTrue((resources / "AppIcon.icns").is_file())
+        self.assertTrue((resources / "Assets.car").is_file())
+
     def test_virtual_cursor_runtime_assets_are_packaged_at_native_scales(self) -> None:
         resource_dir = (
             SERVER_BINARY.parent.parent
