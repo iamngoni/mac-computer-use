@@ -182,6 +182,8 @@ public struct AutomationStatusBarActions {
     public let sessions: () -> [ServiceSessionSummary]
     public let agentPreviewEnabled: () -> Bool
     public let setAgentPreviewEnabled: (Bool) -> Void
+    public let voiceEnabled: () -> Bool
+    public let setVoiceEnabled: (Bool) -> Void
     public let tours: () -> [(name: String, title: String)]
     public let playTour: (String) -> Void
     public let openToursFolder: () -> Void
@@ -198,6 +200,8 @@ public struct AutomationStatusBarActions {
         sessions: @escaping () -> [ServiceSessionSummary] = { [] },
         agentPreviewEnabled: @escaping () -> Bool = { false },
         setAgentPreviewEnabled: @escaping (Bool) -> Void = { _ in },
+        voiceEnabled: @escaping () -> Bool = { false },
+        setVoiceEnabled: @escaping (Bool) -> Void = { _ in },
         tours: @escaping () -> [(name: String, title: String)] = { [] },
         playTour: @escaping (String) -> Void = { _ in },
         openToursFolder: @escaping () -> Void = {}
@@ -213,6 +217,8 @@ public struct AutomationStatusBarActions {
         self.sessions = sessions
         self.agentPreviewEnabled = agentPreviewEnabled
         self.setAgentPreviewEnabled = setAgentPreviewEnabled
+        self.voiceEnabled = voiceEnabled
+        self.setVoiceEnabled = setVoiceEnabled
         self.tours = tours
         self.playTour = playTour
         self.openToursFolder = openToursFolder
@@ -279,6 +285,7 @@ final class AutomationStatusBarController {
             actions?.canCheckForUpdates() == true ? "updates-enabled" : "updates-disabled",
             paused ? "paused" : "running",
             actions?.agentPreviewEnabled() == true ? "preview" : "no-preview",
+            actions?.voiceEnabled() == true ? "voice" : "no-voice",
             (actions?.tours() ?? []).map(\.name).joined(separator: ","),
         ] + presentation.controlledAppTitles + ["|"] + clients).joined(separator: "\u{1f}")
         guard signature != lastSignature else { return }
@@ -347,6 +354,14 @@ final class AutomationStatusBarController {
             preview.target = self
             preview.state = actions.agentPreviewEnabled() ? .on : .off
             menu.addItem(preview)
+            let voice = NSMenuItem(
+                title: "Speak Aloud",
+                action: #selector(toggleVoice),
+                keyEquivalent: ""
+            )
+            voice.target = self
+            voice.state = actions.voiceEnabled() ? .on : .off
+            menu.addItem(voice)
 
             menu.addItem(.separator())
             let clientsHeading = NSMenuItem(title: "Connected clients", action: nil, keyEquivalent: "")
@@ -434,6 +449,10 @@ final class AutomationStatusBarController {
     @objc private func togglePreview() {
         guard let actions else { return }
         actions.setAgentPreviewEnabled(!actions.agentPreviewEnabled())
+    }
+    @objc private func toggleVoice() {
+        guard let actions else { return }
+        actions.setVoiceEnabled(!actions.voiceEnabled())
     }
     @objc private func togglePause() {
         guard let actions else { return }

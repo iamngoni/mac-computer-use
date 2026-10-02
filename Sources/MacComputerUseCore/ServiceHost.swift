@@ -361,6 +361,7 @@ public final class ServiceHost {
     private let approvals: ClientApprovalStore
     private let presenter: ServiceOverlayPresenter?
     private let agentCam: AgentCam?
+    private let voice: ServiceVoice
     private var listenDescriptor: Int32 = -1
     private var sessions: [String: ServiceSession] = [:]
     private var acceptingConnections = false
@@ -391,6 +392,7 @@ public final class ServiceHost {
             log("virtual cursor runtime assets are missing; the service will run without an overlay")
         }
         agentCam = presenter == nil ? nil : AgentCam(captureVisible: environment["MACCU_CAPTURE_OVERLAY"] == "1")
+        voice = ServiceVoice(environment: environment)
         presenter?.onWindowsChanged = { [weak self] identifiers in
             self?.broadcast(["type": "overlay_windows", "ids": identifiers.map { Int($0) }])
         }
@@ -450,6 +452,7 @@ public final class ServiceHost {
             kill(session.workerPID, SIGTERM)
         }
         sessions.removeAll()
+        voice.stopAll()
         agentCam?.hide()
         presenter?.removeAll()
         for monitor in keyMonitors { NSEvent.removeMonitor(monitor) }
@@ -515,6 +518,7 @@ public final class ServiceHost {
     public func setPaused(_ paused: Bool) {
         guard isPaused != paused else { return }
         isPaused = paused
+        if paused { voice.stopAll() }
         broadcast(["type": "pause", "paused": paused])
         presenter?.setPaused(paused)
         notifyChange()
@@ -729,6 +733,7 @@ public final class ServiceHost {
             control.send(["type": "overlay_windows", "ids": presenter.windowIDs.map { Int($0) }])
         }
         if isPaused { control.send(["type": "pause", "paused": true]) }
+        control.send(["type": "voice", "enabled": voice.canSpeak])
         log("session \(sessionID) started for \(identity.displayName) [\(identity.key)] worker \(workerPID)")
         notifyChange()
     }
@@ -837,6 +842,8 @@ public final class ServiceHost {
             )
         case "bubble_clear":
             presenter?.clearBubble(sessionID: sessionID)
+        case "speak":
+            voice.speak(String((message["text"] as? String ?? "").prefix(400)))
         case "annotate":
             presenter?.annotations.show(
                 owner: sessionID,
@@ -929,6 +936,30 @@ public final class ServiceHost {
                 windowIDs: { pick.windowIDs },
                 dismiss: { pick.finish(nil) }
             )
+        case "say":
+            let text = String((message["text"] as? String ?? "").prefix(400))
+            guard voice.canSpeak else {
+                session.control.send(["type": "response", "id": requestID, "outcome": "muted"])
+                return
+            }
+            guard message["wait"] as? Bool ?? true else {
+                voice.speak(text)
+                session.control.send(["type": "response", "id": requestID, "outcome": "started"])
+                return
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { [] },
+                dismiss: { [weak voice] in voice?.stopAll() }
+            )
+            voice.speak(text) { outcome in
+                switch outcome {
+                case .spoken: respond(["outcome": "spoken"])
+                case .muted: respond(["outcome": "muted"])
+                case .interrupted: respond(["outcome": "cancelled"])
+                }
+            }
         case "wait_click":
             guard let rect = quartzRect(message["rect"]) else {
                 session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
@@ -968,6 +999,18 @@ public final class ServiceHost {
 
     private func refreshExtraWindows() {
         presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() } + (agentCam?.panelWindowID.map { [$0] } ?? []))
+    }
+
+    /// Whether agents may speak aloud. Turning it off silences any speech
+    /// in progress, and every worker learns so tools report it honestly.
+    public var voiceEnabled: Bool {
+        get { VoicePreference.isEnabled }
+        set {
+            VoicePreference.isEnabled = newValue
+            if !newValue { voice.stopAll() }
+            broadcast(["type": "voice", "enabled": voice.canSpeak])
+            notifyChange()
+        }
     }
 
     public var agentPreviewEnabled: Bool {
@@ -1067,6 +1110,7 @@ public final class ServiceHost {
     }
 
     private func escapePressed() {
+        voice.stopAll()
         if let tourPlayback {
             tourPlayback.cancel()
             return

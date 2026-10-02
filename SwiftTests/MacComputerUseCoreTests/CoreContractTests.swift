@@ -327,6 +327,7 @@ final class CoreContractTests: XCTestCase {
                 "pick_element",
                 "wait_for_user",
                 "guide",
+                "say",
                 "health_report",
             ]
         )
@@ -716,8 +717,8 @@ final class CoreContractTests: XCTestCase {
     }
 
     func testInteractionToolsRefuseWithoutTheService() {
-        for name in ["point_at", "annotate", "clear_annotations", "ask_user", "pick_element", "wait_for_user"] {
-            let result = dispatchTool(name, ["app": "Finder", "question": "q", "options": ["a", "b"], "instruction": "i"])
+        for name in ["point_at", "annotate", "clear_annotations", "ask_user", "pick_element", "wait_for_user", "say"] {
+            let result = dispatchTool(name, ["app": "Finder", "question": "q", "options": ["a", "b"], "instruction": "i", "text": "t"])
             XCTAssertEqual(result["isError"] as? Bool, true, name)
             XCTAssertTrue((toolResultText(result) ?? "").hasPrefix("[requires_service]"), name)
         }
