@@ -59,9 +59,23 @@ jobs:
           security create-keychain -p "$RUNNER_TEMP" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$RUNNER_TEMP" "$keychain"
-          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" "$keychain"
+          # The .p12 is an aggregate of the certificate and its private key;
+          # importing it as a certificate alone leaves no signing identity.
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -t agg -T /usr/bin/codesign -k "$keychain"
           rm "$certificate"
+          # Apple's Developer ID G2 intermediate, pinned by fingerprint, so the
+          # identity validates on a Mac that never installed it via Xcode.
+          intermediate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          curl -fsSL --retry 3 -o "$intermediate" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $intermediate" | shasum -a 256 -c -
+          security import "$intermediate" -t cert -k "$keychain"
+          rm "$intermediate"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" "$keychain"
+          if ! security find-identity -v -p codesigning "$keychain" | grep -q "Developer ID Application"; then
+            echo "The signing keychain has no valid Developer ID Application identity." >&2
+            security find-identity -p codesigning "$keychain" | tail -n 1 >&2
+            exit 1
+          fi
 
       - name: Test source
         run: swift test -Xswiftc -warnings-as-errors
