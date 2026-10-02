@@ -30,8 +30,11 @@ jobs:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
       SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
       CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      SIGNING_KEYCHAIN: ${{ runner.temp }}/maccu-signing.keychain-db
     steps:
+      # The runner context is only available inside steps, not in job env.
+      - name: Locate temporary signing keychain
+        run: echo "SIGNING_KEYCHAIN=$RUNNER_TEMP/maccu-signing.keychain-db" >> "$GITHUB_ENV"
+
       - name: Check out tagged source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
