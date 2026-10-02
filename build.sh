@@ -12,7 +12,17 @@ VERSION="$(tr -d '[:space:]' < VERSION)"
 BUILD_MODE="${BUILD_MODE:-local}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR}"
 APP="$OUTPUT_DIR/$APP_NAME"
-SIGNING_IDENTITY="${CODE_SIGN_IDENTITY:--}"
+# CODE_SIGN_IDENTITY picks the signing identity; "-" forces ad-hoc. Builds
+# otherwise use the first Developer ID Application identity in the keychain,
+# so the designated requirement (and with it the Accessibility and Screen
+# Recording grants) stays the same from one build to the next.
+if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
+  SIGNING_IDENTITY="$CODE_SIGN_IDENTITY"
+else
+  SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/^ *[0-9][0-9]*) [0-9A-F]\{40\} "\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
 BUILD_ARCHS="${BUILD_ARCHS:-$(uname -m)}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
@@ -44,8 +54,12 @@ mkdir -p \
   "$APP/Contents/Resources/VirtualCursor"
 
 echo "Compiling Swift package for: $BUILD_ARCHS"
+# Some SwiftPM build backends reuse one products directory for every
+# architecture, so each slice is copied aside before the next build.
+ARCH_STAGING=".build/arch-binaries"
+rm -rf "$ARCH_STAGING"
+mkdir -p "$ARCH_STAGING"
 binary_paths=()
-framework_path=""
 for arch in $BUILD_ARCHS; do
   swift build \
     -c release \
@@ -53,9 +67,14 @@ for arch in $BUILD_ARCHS; do
     --product "$EXECUTABLE" \
     -Xswiftc -warnings-as-errors
   bin_dir="$(swift build -c release --arch "$arch" --show-bin-path)"
-  binary_paths+=("$bin_dir/$EXECUTABLE")
-  if [[ -z "$framework_path" ]]; then
-    framework_path="$bin_dir/Sparkle.framework"
+  if ! lipo -archs "$bin_dir/$EXECUTABLE" | tr ' ' '\n' | grep -Fxq "$arch"; then
+    echo "The $arch build did not produce a $arch binary." >&2
+    exit 1
+  fi
+  cp "$bin_dir/$EXECUTABLE" "$ARCH_STAGING/$EXECUTABLE-$arch"
+  binary_paths+=("$ARCH_STAGING/$EXECUTABLE-$arch")
+  if [[ ! -d "$APP/Contents/Frameworks/Sparkle.framework" ]]; then
+    ditto "$bin_dir/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
   fi
 done
 
@@ -64,7 +83,6 @@ if [[ ${#binary_paths[@]} -eq 1 ]]; then
 else
   lipo -create "${binary_paths[@]}" -output "$APP/Contents/MacOS/$EXECUTABLE"
 fi
-ditto "$framework_path" "$APP/Contents/Frameworks/Sparkle.framework"
 cp .build/checkouts/Sparkle/LICENSE "$APP/Contents/Resources/Licenses/Sparkle-LICENSE.txt"
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
@@ -78,6 +96,7 @@ for asset in \
   cursor-pulse.png cursor-pulse@2x.png cursor-pulse@3x.png; do
   cp "Assets/VirtualCursor/$asset" "$APP/Contents/Resources/VirtualCursor/$asset"
 done
+cp Assets/AppIcon/AppIcon.icns Assets/AppIcon/Assets.car "$APP/Contents/Resources/"
 
 sparkle_configuration=""
 if [[ "$BUILD_MODE" == "release" ]]; then
@@ -103,6 +122,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>$EXECUTABLE</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSAppleEventsUsageDescription</key><string>Mac Computer Use needs permission to navigate supported browsers on your behalf.</string>
@@ -114,13 +135,13 @@ PLIST
 
 plutil -lint "$APP/Contents/Info.plist"
 
-# Local builds are ad-hoc signed. They still use the hardened runtime, which
-# ignores DYLD_* injection into the process that holds the Accessibility and
-# Screen Recording grants. Ad-hoc code has no Team ID, so library validation
-# would refuse the separately signed Sparkle framework; local builds disable
-# only that check. Release builds keep full library validation.
+# Every build uses the hardened runtime, which ignores DYLD_* injection into
+# the process that holds the Accessibility and Screen Recording grants.
+# Ad-hoc code has no Team ID, so library validation would refuse the
+# separately signed Sparkle framework; ad-hoc builds disable only that check.
+# Developer ID builds sign Sparkle with the same team and keep it.
 LOCAL_ENTITLEMENTS=".build/local-app.entitlements"
-if [[ "$BUILD_MODE" != "release" ]]; then
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   cat > "$LOCAL_ENTITLEMENTS" <<ENTITLEMENTS
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -143,8 +164,8 @@ sign_target() {
       codesign_args+=(--keychain "$SIGNING_KEYCHAIN")
     fi
   else
-    codesign_args+=(--options runtime --timestamp=none --sign -)
-    if [[ "$target" == "$APP" ]]; then
+    codesign_args+=(--options runtime --timestamp=none --sign "$SIGNING_IDENTITY")
+    if [[ "$SIGNING_IDENTITY" == "-" && "$target" == "$APP" ]]; then
       codesign_args+=(--entitlements "$LOCAL_ENTITLEMENTS")
     fi
   fi
@@ -154,7 +175,11 @@ sign_target() {
   codesign "${codesign_args[@]}" "$target"
 }
 
-echo "Signing nested Sparkle services and app"
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "Signing ad-hoc (no Developer ID identity found)"
+else
+  echo "Signing with $SIGNING_IDENTITY"
+fi
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 sign_target "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
 sign_target "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" preserve-entitlements
@@ -167,4 +192,4 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 test "$(defaults read "$APP/Contents/Info" CFBundleIdentifier)" = "$BUNDLE_ID"
 test "$(defaults read "$APP/Contents/Info" CFBundleExecutable)" = "$EXECUTABLE"
 
-echo "Built $APP ($VERSION, $BUILD_MODE)"
+echo "Built $APP ($VERSION, $BUILD_MODE, signed by ${SIGNING_IDENTITY/#-/ad-hoc})"

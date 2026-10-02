@@ -726,10 +726,9 @@ final class CoreContractTests: XCTestCase {
     func testElementIndexesAcceptIntegersOrIntegerStrings() {
         XCTAssertEqual(parseElementIndex("12") ?? nil, 12)
         XCTAssertEqual(parseElementIndex(NSNumber(value: 7)) ?? nil, 7)
-        XCTAssertNotNil(parseElementIndex(nil))
-        XCTAssertNil(parseElementIndex(nil) ?? nil)
-        XCTAssertNil(parseElementIndex("-1"))
-        XCTAssertNil(parseElementIndex(true))
+        XCTAssertEqual(parseElementIndex(nil), .some(nil))
+        XCTAssertEqual(parseElementIndex("-1"), .none)
+        XCTAssertEqual(parseElementIndex(true), .none)
     }
 
     func testToursRoundTripAndMatchElementsBySemanticsNotPixels() throws {

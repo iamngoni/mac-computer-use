@@ -124,11 +124,14 @@ Requires the Swift toolchain (Xcode or Command Line Tools).
 ./build.sh
 ```
 
-This builds the Swift package's release executable, embeds Sparkle and the cursor assets in `MacComputerUse.app`,
-and ad-hoc code-signs the bundle with the stable identifier
-`com.modestnerd.mac-computer-use` so macOS permission grants survive in-place rebuilds.
-Local builds use the hardened runtime like releases do, so `DYLD_*` injection is ignored; only library
-validation is relaxed, because ad-hoc code has no Team ID to match the bundled Sparkle framework.
+This builds the Swift package's release executable, embeds Sparkle, the app icon and the cursor assets in
+`MacComputerUse.app`, and signs the bundle with the first `Developer ID Application` identity in your keychain
+(or the one named by `CODE_SIGN_IDENTITY`). A Developer ID signature gives the app a stable designated
+requirement, so Accessibility and Screen Recording grants survive rebuilds and updates, and it turns on the
+keychain anchor that protects client approvals. Without such an identity, or with `CODE_SIGN_IDENTITY=-`, the
+build is ad-hoc signed and macOS asks for permissions again after each rebuild.
+Every build uses the hardened runtime, so `DYLD_*` injection is ignored. Ad-hoc builds relax only library
+validation, because ad-hoc code has no Team ID to match the bundled Sparkle framework.
 The version comes from `VERSION`; the executable and `Info.plist` both target macOS 13 or later. Local builds intentionally omit the Sparkle feed and public key, so they never contact the release channel.
 
 ## Test
@@ -222,6 +225,8 @@ tests/test_live_app_resolution.py   # permissioned app lifecycle regression
 .github/workflows/                  # compile, GUI, and signed-release workflows
 Packaging/Casks/                    # rendered into each release's Homebrew cask
 scripts/package_release.sh          # notarize and assemble release artifacts
+scripts/publish_release.sh          # package and publish a tagged release from this Mac
+scripts/generate_app_icon.swift     # build Assets/AppIcon/AppIcon.icns from its source art
 build.sh                            # embed dependencies and sign MacComputerUse.app
 VERSION                             # single source of app/release version
 THIRD_PARTY_NOTICES.md              # attribution for the SkyLight click recipe
