@@ -112,9 +112,21 @@ Download the notarized DMG from [GitHub Releases](https://github.com/iamngoni/ma
 
 1. Grant Accessibility and Screen Recording access.
 2. Connect Codex and/or Claude Code. Existing registrations are shown and are replaced only after an explicit click.
-3. Optionally enable launch at login.
+3. Optionally install the agent skill (see below) and enable launch at login.
 
 After setup, the app lives in the menu bar. Opening it again returns to setup. Each release also includes a ready-to-publish Homebrew cask; see [the release guide](docs/RELEASING.md).
+
+### Agent skill
+
+The app ships a `mac-computer-use` skill ([`Skills/mac-computer-use/SKILL.md`](Skills/mac-computer-use/SKILL.md)) that teaches agents how to use these tools well: the look, act, check loop, element indexes versus pixels, background-safe input, the cursor tools for talking to the user, and what to do with each `[error_code]`. The **Agent skill** row in setup installs it, one chip per destination:
+
+| Chip | Installs into |
+| --- | --- |
+| Codex | `~/.codex/skills/mac-computer-use` |
+| Claude | `~/.claude/skills/mac-computer-use` |
+| Global | `~/.agents/skills/mac-computer-use`, the shared folder other agents read |
+
+Each copy carries a marker with the digest it was installed with. When the app updates, it refreshes its own untouched copies at launch. It never overwrites a skill it did not install, or a copy you edited, unless you click the chip and confirm; the replaced folder goes to the Trash. Clicking an installed chip removes the app's copy.
 
 ## Build
 
@@ -224,6 +236,7 @@ tests/test_mcp_contract.py          # permission-free executable protocol test
 tests/test_live_app_resolution.py   # permissioned app lifecycle regression
 .github/workflows/                  # compile, GUI, and signed-release workflows
 Packaging/Casks/                    # rendered into each release's Homebrew cask
+Skills/mac-computer-use/            # agent skill bundled into the app and installed from setup
 scripts/package_release.sh          # notarize and assemble release artifacts
 scripts/publish_release.sh          # package and publish a tagged release from this Mac
 scripts/generate_app_icon.swift     # build Assets/AppIcon/AppIcon.icns from its source art

@@ -97,6 +97,8 @@ for asset in \
   cp "Assets/VirtualCursor/$asset" "$APP/Contents/Resources/VirtualCursor/$asset"
 done
 cp Assets/AppIcon/AppIcon.icns Assets/AppIcon/Assets.car "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources/Skills"
+ditto Skills/mac-computer-use "$APP/Contents/Resources/Skills/mac-computer-use"
 
 sparkle_configuration=""
 if [[ "$BUILD_MODE" == "release" ]]; then
