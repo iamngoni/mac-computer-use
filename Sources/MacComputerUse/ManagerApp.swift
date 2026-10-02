@@ -78,7 +78,9 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
         refreshStatusItem()
 
         let defaults = UserDefaults.standard
-        if !launchedInBackground && !defaults.bool(forKey: "hasPresentedSetup") {
+        if CommandLine.arguments.contains("--show-setup") {
+            setup.showSetup()
+        } else if !launchedInBackground && !defaults.bool(forKey: "hasPresentedSetup") {
             defaults.set(true, forKey: "hasPresentedSetup")
             setup.showSetup()
         }
