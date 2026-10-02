@@ -41,6 +41,17 @@ private func resolutionHealth() -> [String: Any] {
     ]
 }
 
+private func responsibleProcessHealth() -> [String: Any] {
+    let responsible = responsibleProcessIdentifier(for: getpid())
+    let path = executablePath(forProcess: responsible)
+    let bundlePath = path.flatMap { outermostApplicationBundle(containingExecutable: $0) }
+    return [
+        "pid": Int(responsible),
+        "is_self": responsible == getpid(),
+        "application": redactedHomePath(bundlePath ?? path),
+    ]
+}
+
 func toolHealthReport() -> [String: Any] {
     let bundle = Bundle.main
     let executable = bundle.executablePath ?? CommandLine.arguments.first
@@ -55,8 +66,13 @@ func toolHealthReport() -> [String: Any] {
         "process": [
             "pid": Int(getpid()),
             "executable": redactedHomePath(executable),
-            "mode": "stdio_mcp",
+            "mode": WorkerSession.shared.isAttached ? "service_worker" : "stdio_mcp",
         ],
+        // macOS checks Accessibility and Screen Recording against this app.
+        "permissions_attributed_to": responsibleProcessHealth(),
+        "service": WorkerSession.shared.isAttached
+            ? WorkerSession.shared.healthSnapshot()
+            : ["connected": false] as [String: Any],
         "bundle": [
             "identifier": bundleIdentifier,
             "version": macComputerUseVersion(),
@@ -67,7 +83,7 @@ func toolHealthReport() -> [String: Any] {
         "resolution": resolutionHealth(),
         "input": [
             "default_scope": "application_scoped",
-            "global_pointer_opt_in": "disabled",
+            "global_pointer_opt_in": "allow_global_input",
             "hardware_pointer_moves_by_default": false,
         ],
     ]

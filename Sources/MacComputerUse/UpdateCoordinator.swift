@@ -9,6 +9,8 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate {
     private var pendingVersion = "update"
     private var retryTimer: Timer?
     private(set) var installationLease: ExclusiveUpdateLease?
+    private let canInstall: () -> Bool
+    private let prepareForInstall: () -> Void
 
     private lazy var controller = SPUStandardUpdaterController(
         startingUpdater: false,
@@ -16,7 +18,12 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate {
         userDriverDelegate: nil
     )
 
-    override init() {
+    /// `canInstall` reports whether no tool call is in flight; updates never
+    /// interrupt an action. `prepareForInstall` stops the service's sessions,
+    /// whose relays reconnect to the new version on their next call.
+    init(canInstall: @escaping () -> Bool, prepareForInstall: @escaping () -> Void) {
+        self.canInstall = canInstall
+        self.prepareForInstall = prepareForInstall
         let info = Bundle.main.infoDictionary ?? [:]
         let feed = (info["SUFeedURL"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -82,6 +89,7 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate {
 
     private func attemptPendingInstall() {
         guard installationLease == nil, let handler = pendingInstallHandler else { return }
+        guard canInstall() else { return }
         guard let lease = ExclusiveUpdateLease.acquire(
             version: pendingVersion,
             keepsMarkerAfterRelease: true
@@ -90,6 +98,7 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate {
         pendingInstallHandler = nil
         retryTimer?.invalidate()
         retryTimer = nil
+        prepareForInstall()
         handler()
     }
 }

@@ -20,6 +20,176 @@ final class CoreContractTests: XCTestCase {
             macComputerUseLaunchMode(arguments: ["mac-computer-use", "overlay"], standardInputIsPipe: false),
             .overlay
         )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "worker", "--session", "x"], standardInputIsPipe: true),
+            .worker
+        )
+        XCTAssertEqual(
+            macComputerUseLaunchMode(arguments: ["mac-computer-use", "manager", "--background"], standardInputIsPipe: true),
+            .manager
+        )
+    }
+
+    func testMCPRunsInProcessOnlyOutsideTheAppOrWhenAskedTo() {
+        let app = URL(fileURLWithPath: "/Applications/MacComputerUse.app")
+        let loose = URL(fileURLWithPath: "/tmp/build/debug")
+        XCTAssertFalse(mcpShouldRunInProcess(arguments: ["x", "mcp"], environment: [:], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x", "mcp", "--in-process"], environment: [:], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: ["MACCU_IN_PROCESS": "1"], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: ["MACCU_DISABLE_MANAGER": "1"], bundleURL: app))
+        XCTAssertTrue(mcpShouldRunInProcess(arguments: ["x"], environment: [:], bundleURL: loose))
+    }
+
+    func testRelayAnswersLocallyWhileTheServiceIsOff() throws {
+        let call: [String: Any] = ["jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": ["name": "list_apps"]]
+        let stopped = try XCTUnwrap(relayLocalReply(to: call, reason: .stoppedByUser))
+        let result = try XCTUnwrap(stopped["result"] as? [String: Any])
+        XCTAssertEqual(result["isError"] as? Bool, true)
+        XCTAssertTrue((toolResultText(result) ?? "").hasPrefix("[stopped_by_user]"))
+
+        let list = try XCTUnwrap(relayLocalReply(to: ["id": 8, "method": "tools/list"], reason: .updating))
+        let tools = try XCTUnwrap((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, toolSchemas().count)
+
+        XCTAssertNil(relayLocalReply(to: ["method": "notifications/initialized"], reason: .updating))
+
+        let disconnected = relayDisconnectedReply(id: "a", method: "tools/call")
+        let disconnectedResult = try XCTUnwrap(disconnected["result"] as? [String: Any])
+        XCTAssertTrue((toolResultText(disconnectedResult) ?? "").hasPrefix("[service_disconnected]"))
+        XCTAssertNotNil(relayDisconnectedReply(id: 3, method: "ping")["error"])
+    }
+
+    func testClientIdentityKeysSurviveUpdatesButPinUnverifiedClients() {
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/A/App.app",
+                                     teamVerified: true, appleVerified: false),
+            "team:TEAM123:com.example.app"
+        )
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app",
+                                     teamVerified: false, appleVerified: true),
+            "apple:com.apple.Terminal"
+        )
+        // A self-signed binary that merely claims Terminal's identifier must
+        // not inherit Terminal's approval.
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: nil, signingIdentifier: "com.apple.Terminal", path: "/tmp/Fake.app",
+                                     teamVerified: false, appleVerified: false),
+            "path:/tmp/Fake.app"
+        )
+        XCTAssertEqual(
+            serviceClientApprovalKey(teamIdentifier: "TEAM123", signingIdentifier: "com.example.app", path: "/tmp/Fake.app",
+                                     teamVerified: false, appleVerified: false),
+            "path:/tmp/Fake.app"
+        )
+        XCTAssertEqual(
+            outermostApplicationBundle(containingExecutable: "/Applications/Host.app/Contents/Frameworks/Host Helper.app/Contents/MacOS/Host Helper"),
+            "/Applications/Host.app"
+        )
+        XCTAssertNil(outermostApplicationBundle(containingExecutable: "/usr/local/bin/node"))
+    }
+
+    func testClientApprovalsPersistAndCanBeRevoked() throws {
+        let suite = "mac-computer-use-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ClientApprovalStore(defaults: defaults, anchor: nil)
+        let identity = ServiceClientIdentity(
+            key: "team:T:com.example", displayName: "Example", bundleIdentifier: "com.example",
+            teamIdentifier: "T", signer: "Developer ID Application: Example (T)", path: "/Applications/Example.app",
+            requirement: "identifier \"com.example\" and anchor apple generic"
+        )
+        XCTAssertFalse(store.isApproved(identity.key))
+        store.approve(identity)
+        store.approve(identity)
+        XCTAssertTrue(ClientApprovalStore(defaults: defaults, anchor: nil).isApproved(identity.key))
+        XCTAssertEqual(store.clients.count, 1)
+        XCTAssertEqual(store.clients.first?.detail, "Developer ID Application: Example (T)")
+        // Approval also requires the client's code to still satisfy the stored requirement.
+        XCTAssertTrue(store.isApproved(identity, satisfies: { $0 == identity.requirement }))
+        XCTAssertFalse(store.isApproved(identity, satisfies: { _ in false }))
+        store.revoke(identity.key)
+        XCTAssertFalse(store.isApproved(identity.key))
+    }
+
+    func testAnchoredApprovalsIgnoreForgedOrRolledBackPreferences() throws {
+        final class MemoryAnchor: ApprovalAnchor {
+            var digest: Data?
+            func record(_ data: Data) { digest = sha256(data) }
+            func matches(_ data: Data) -> Bool { digest == sha256(data) }
+        }
+        let suite = "mac-computer-use-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ClientApprovalStore(defaults: defaults, anchor: MemoryAnchor())
+        func identity(_ path: String) -> ServiceClientIdentity {
+            ServiceClientIdentity(key: "path:\(path)", displayName: path, bundleIdentifier: nil, teamIdentifier: nil,
+                                  signer: nil, path: path, requirement: "cdhash H\"00\"")
+        }
+        store.approve(identity("/a"))
+        store.approve(identity("/b"))
+        let withB = try XCTUnwrap(defaults.data(forKey: "approvedServiceClients"))
+        store.revoke("path:/b")
+        XCTAssertFalse(store.isApproved("path:/b"))
+        // Writing the older list back would restore the revoked client.
+        defaults.set(withB, forKey: "approvedServiceClients")
+        XCTAssertFalse(store.isApproved("path:/b"))
+        XCTAssertEqual(store.clients, [])
+        // A forged list is ignored the same way.
+        defaults.set(try JSONEncoder().encode([ApprovedServiceClient(
+            key: "path:/evil", displayName: "Evil", detail: "", approvedAt: Date(), requirement: nil
+        )]), forKey: "approvedServiceClients")
+        XCTAssertFalse(store.isApproved("path:/evil"))
+    }
+
+    func testTestAutoApprovalNeverAppliesToALaunchServicesService() {
+        let env = ["MACCU_RUNTIME_DIR": "/tmp/x", "MACCU_TEST_AUTO_APPROVE": "1"]
+        XCTAssertTrue(testAutoApprovalAllowed(environment: env, servicePID: 10, responsiblePID: { _ in 99 }))
+        XCTAssertFalse(testAutoApprovalAllowed(environment: env, servicePID: 10, responsiblePID: { $0 }))
+        XCTAssertFalse(testAutoApprovalAllowed(environment: ["MACCU_TEST_AUTO_APPROVE": "1"], servicePID: 10, responsiblePID: { _ in 99 }))
+    }
+
+    func testWorkersNeverInheritLoaderOverrides() {
+        let environment = workerEnvironment(from: [
+            "HOME": "/Users/me", "PATH": "/usr/bin", "LC_ALL": "en_US.UTF-8",
+            "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib", "MACCU_CURSOR_PACE": "off",
+            "MACCU_TEST_AUTO_APPROVE": "1", "OPENAI_API_KEY": "secret",
+        ])
+        XCTAssertEqual(environment, [
+            "HOME": "/Users/me", "PATH": "/usr/bin", "LC_ALL": "en_US.UTF-8", "MACCU_CURSOR_PACE": "off",
+        ])
+    }
+
+    func testRuntimeDirectoryHonoursOverrideAndKeepsSocketPathShort() {
+        let overridden = MacComputerUseRuntime.directory(environment: ["MACCU_RUNTIME_DIR": "/tmp/x"])
+        XCTAssertEqual(overridden.path, "/tmp/x")
+        XCTAssertEqual(
+            MacComputerUseRuntime.stoppedMarkerURL(environment: ["MACCU_RUNTIME_DIR": "/tmp/x"]).path,
+            "/tmp/x/stopped-by-user"
+        )
+        let socket = MacComputerUseRuntime.socketURL(environment: [:]).path
+        XCTAssertLessThan(socket.utf8.count, 104, socket)
+        XCTAssertTrue(socket.hasSuffix("com.modestnerd.mac-computer-use/service.sock"))
+    }
+
+    func testLineReaderSplitsLinesAcrossReads() throws {
+        var pair: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[0]); close(pair[1]) }
+        let big = String(repeating: "x", count: 200_000)
+        let writer = pair[1]
+        let written = expectation(description: "written")
+        // The payload exceeds the socket buffer, so write while the reader drains.
+        DispatchQueue.global().async {
+            _ = writeAll(writer, Data("{\"a\":1}\n{\"b\":\"".utf8))
+            _ = writeAll(writer, Data((big + "\"}\n").utf8))
+            written.fulfill()
+        }
+        let reader = LineReader(descriptor: pair[0])
+        XCTAssertEqual(decodeJSONLine(try XCTUnwrap(reader.readLine(timeout: 1)))?["a"] as? Int, 1)
+        XCTAssertEqual((decodeJSONLine(try XCTUnwrap(reader.readLine(timeout: 1)))?["b"] as? String)?.count, big.count)
+        XCTAssertNil(reader.readLine(timeout: 0.05))
+        wait(for: [written], timeout: 5)
     }
 
     func testUpdateGateWaitsForSessionsAndBlocksNewOnesThroughInstallerHandoff() throws {
@@ -133,6 +303,9 @@ final class CoreContractTests: XCTestCase {
             [
                 "list_apps",
                 "get_app_state",
+                "get_desktop_state",
+                "desktop_click",
+                "desktop_press_key",
                 "click",
                 "type_text",
                 "press_key",
@@ -147,6 +320,13 @@ final class CoreContractTests: XCTestCase {
                 "verify_state",
                 "set_window_frame",
                 "invoke_menu",
+                "point_at",
+                "annotate",
+                "clear_annotations",
+                "ask_user",
+                "pick_element",
+                "wait_for_user",
+                "guide",
                 "health_report",
             ]
         )
@@ -174,6 +354,49 @@ final class CoreContractTests: XCTestCase {
         XCTAssertFalse(methods.contains("global"))
     }
 
+    func testDesktopSchemasRequireExplicitGlobalInputAndUseAnExclusiveTargetShape() throws {
+        let click = try XCTUnwrap(toolSchemas().first { $0["name"] as? String == "desktop_click" })
+        let input = try XCTUnwrap(click["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(input["properties"] as? [String: Any])
+        let permission = try XCTUnwrap(properties["allow_global_input"] as? [String: Any])
+        XCTAssertEqual(permission["const"] as? Bool, true)
+        XCTAssertEqual(
+            desktopActionShapeIsValid(["element_index": 1]),
+            true
+        )
+        XCTAssertEqual(
+            desktopActionShapeIsValid(["x": 10.0, "y": 20.0]),
+            true
+        )
+        XCTAssertFalse(
+            desktopActionShapeIsValid(["element_index": 1, "x": 10.0, "y": 20.0])
+        )
+        XCTAssertFalse(desktopActionShapeIsValid(["x": 10.0]))
+    }
+
+    func testGlobalInputLeaseIsNonBlockingAndReleasesAfterFailurePath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "maccu-global-input-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var first: GlobalInputLease? = GlobalInputLease.acquire(in: root)
+        XCTAssertNotNil(first)
+        XCTAssertNil(GlobalInputLease.acquire(in: root))
+        first?.release()
+        first = nil
+        XCTAssertNotNil(GlobalInputLease.acquire(in: root))
+    }
+
+    func testDesktopKeyValidationRejectsUnknownModifiersAndKeys() {
+        XCTAssertTrue(desktopKeySpecIsKnown("cmd+shift+left"))
+        XCTAssertTrue(desktopKeySpecIsKnown("Return"))
+        XCTAssertFalse(desktopKeySpecIsKnown("fn+left"))
+        XCTAssertFalse(desktopKeySpecIsKnown("not-a-key"))
+    }
+
     func testQuartzToCocoaConversionSupportsDisplaysAroundPrimary() {
         XCTAssertEqual(
             quartzPointToCocoa(CGPoint(x: -320, y: -120), primaryDisplayHeight: 900),
@@ -199,15 +422,136 @@ final class CoreContractTests: XCTestCase {
     }
 
     func testCursorAssetGeometryAlignsPointerHotspotToAutomationCoordinate() {
-        let bounds = CGRect(x: 0, y: 0, width: 72, height: 72)
+        let bounds = CGRect(x: 0, y: 0, width: 80, height: 80)
         XCTAssertEqual(
             cursorPointerDrawRect(in: bounds),
-            CGRect(x: 28, y: 7.5, width: 36, height: 36)
+            CGRect(x: 33.25, y: 18.5, width: 28, height: 28)
         )
         XCTAssertEqual(
             cursorPulseDrawRect(in: bounds, scale: 1),
-            CGRect(x: 18, y: 18, width: 36, height: 36)
+            CGRect(x: 26, y: 26, width: 28, height: 28)
         )
+    }
+
+    func testShippedPointerArtMatchesTheDocumentedCanvasAndHotspot() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let assets = try XCTUnwrap(
+            AutomationCursorAssets.load(
+                resourceRoot: repositoryRoot.appendingPathComponent("Assets", isDirectory: true)
+            ),
+            "The shipped VirtualCursor assets should load at every scale."
+        )
+        XCTAssertEqual(assets.pointer.size, AutomationCursorAssets.canvasSize)
+
+        let scale = 4
+        let width = Int(AutomationCursorAssets.canvasSize.width) * scale
+        let height = Int(AutomationCursorAssets.canvasSize.height) * scale
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: width,
+                pixelsHigh: height,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        )
+        bitmap.size = AutomationCursorAssets.canvasSize
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        assets.pointer.draw(
+            in: CGRect(origin: .zero, size: AutomationCursorAssets.canvasSize),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        NSGraphicsContext.restoreGraphicsState()
+
+        func alpha(atPointX x: CGFloat, y: CGFloat) throws -> CGFloat {
+            try XCTUnwrap(bitmap.colorAt(x: Int(x * CGFloat(scale)), y: Int(y * CGFloat(scale)))).alphaComponent
+        }
+        let hotspot = AutomationCursorAssets.pointerHotspot
+        // Just inside the apex is solid pointer; just outside it is clear, so the
+        // automation coordinate sits on the visible tip rather than in padding.
+        XCTAssertGreaterThan(try alpha(atPointX: hotspot.x + 1.25, y: hotspot.y + 1.0), 0.95)
+        XCTAssertLessThan(try alpha(atPointX: hotspot.x - 2.5, y: hotspot.y - 2.5), 0.25)
+    }
+
+    func testAutomationCursorStaysCompactAndFitsItsPanelWithoutClippingTheGlow() {
+        // The pointer should stay near system-cursor scale, not dominate the screen.
+        XCTAssertLessThanOrEqual(AutomationCursorAssets.canvasSize.width, 32)
+        XCTAssertLessThanOrEqual(AutomationCursorAssets.canvasSize.height, 32)
+
+        let panel = makeAutomationCursorPanel()
+        defer { panel.close() }
+        let bounds = CGRect(origin: .zero, size: panel.frame.size)
+        XCTAssertTrue(bounds.contains(cursorPointerDrawRect(in: bounds)))
+        XCTAssertTrue(bounds.contains(cursorPulseDrawRect(in: bounds, scale: 1)))
+
+        // Mid-flight the arrow can turn any way and swell 1.3x around its
+        // hotspot; the farthest canvas corner must still fit in the panel.
+        let canvas = AutomationCursorAssets.canvasSize
+        let hotspot = AutomationCursorAssets.pointerHotspot
+        let reach = [
+            CGPoint(x: 0, y: 0), CGPoint(x: canvas.width, y: 0),
+            CGPoint(x: 0, y: canvas.height), CGPoint(x: canvas.width, y: canvas.height),
+        ].map { hypot($0.x - hotspot.x, $0.y - hotspot.y) }.max()! * 1.3
+        XCTAssertLessThanOrEqual(reach, min(bounds.width, bounds.height) / 2)
+    }
+
+    func testArcFlightLandsExactlyAndFacesItsDirectionOfTravel() {
+        let flight = CursorFlight(
+            from: CGPoint(x: 0, y: 0), to: CGPoint(x: 800, y: 0), start: 10, pace: .teach
+        )
+        XCTAssertEqual(flight.duration, 1.0, accuracy: 0.0001)
+        let start = flight.sample(at: 10)
+        XCTAssertEqual(start.point, CGPoint(x: 0, y: 0))
+        XCTAssertEqual(start.rotation, 0, accuracy: 0.0001)
+        let middle = flight.sample(at: 10.5)
+        XCTAssertEqual(middle.point.x, 400, accuracy: 0.5)
+        XCTAssertGreaterThan(middle.point.y, 0, "the path arcs upward")
+        XCTAssertEqual(middle.scale, 1.3, accuracy: 0.0001)
+        // Flying right, the up-left resting arrow turns clockwise to face +x.
+        XCTAssertEqual(middle.rotation, -.pi * 3 / 4, accuracy: 0.01)
+        let landed = flight.sample(at: 11.2)
+        XCTAssertEqual(landed, CursorFlight.Sample(point: CGPoint(x: 800, y: 0), rotation: 0, scale: 1, finished: true))
+    }
+
+    func testFlightPaceKeepsActionsQuickAndSkipsTinyHops() {
+        XCTAssertEqual(cursorFlightDuration(distance: 3, pace: .act), 0)
+        XCTAssertEqual(cursorFlightDuration(distance: 100, pace: .act), 0.18, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 5000, pace: .act), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 100, pace: .teach), 0.6, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 5000, pace: .teach), 1.4, accuracy: 0.0001)
+        XCTAssertEqual(cursorFlightDuration(distance: 400, pace: .act, multiplier: 0), 0)
+        XCTAssertEqual(cursorPaceMultiplier(environment: ["MACCU_CURSOR_PACE": "showcase"]), 2)
+        XCTAssertEqual(cursorPaceMultiplier(environment: ["MACCU_CURSOR_PACE": "off"]), 0)
+        XCTAssertEqual(cursorPaceMultiplier(environment: [:]), 1)
+    }
+
+    func testCursorCuesDescribeTheActionAndStaySmall() {
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Typing"), "keyboard")
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Scrolling down"), "arrow.up.and.down")
+        XCTAssertEqual(cursorBadgeSymbol(forStatus: "Pressing cmd+t"), "command")
+        XCTAssertNil(cursorBadgeSymbol(forStatus: "Clicking"))
+        XCTAssertEqual(cursorShakeOffset(now: 5, startedAt: nil), 0)
+        XCTAssertEqual(cursorShakeOffset(now: 5.5, startedAt: 5), 0)
+        XCTAssertLessThanOrEqual(abs(cursorShakeOffset(now: 5.03, startedAt: 5)), 4)
+        XCTAssertEqual(cursorCountdownRemaining(now: 1, start: 0, duration: 2), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(cursorCountdownRemaining(now: 3, start: 0, duration: 2), 0)
+        XCTAssertEqual(
+            cursorIdentityColorIndex(forClientKey: "team:A:x"),
+            cursorIdentityColorIndex(forClientKey: "team:A:x")
+        )
+        XCTAssertTrue((0..<cursorIdentityPalette.count).contains(cursorIdentityColorIndex(forClientKey: "k")))
     }
 
     func testCursorAssetClickMotionUsesAuthoredCompressionAndReboundTiming() {
@@ -322,70 +666,123 @@ final class CoreContractTests: XCTestCase {
         XCTAssertEqual(presentation.controlledAppTitles, ["Safari"])
     }
 
-    func testActiveOverlayAppsAggregateOnlyLiveValidatedSessions() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "maccu-menu-test-\(UUID().uuidString)",
-            isDirectory: true
+    func testIdleSessionsNeverLookActiveAndClientsGroupHonestly() {
+        let summary = { (id: String, name: String, approval: String) in
+            ServiceSessionSummary(
+                id: id, clientName: name, clientKey: "k-" + name, reportedClientName: nil,
+                approval: approval, busy: false, currentApp: nil, active: false
+            )
+        }
+        XCTAssertEqual(
+            connectedClientTitles([
+                summary("1", "claude", "approved"),
+                summary("2", "claude", "approved"),
+                summary("3", "ChatGPT", "pending"),
+            ]),
+            ["ChatGPT (not allowed yet)", "claude · 2 sessions"]
         )
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(connectedClientTitles([]), [])
+    }
 
-        func writeSession(
-            ownerPID: Int,
-            agentPID: Int,
-            channelID: String,
-            apps: [String],
-            controlling: Bool = true,
-            lingerUntil: Double = 0
-        ) throws {
-            let directory = root.appendingPathComponent(
-                "mac-computer-use-overlay-\(ownerPID)-\(channelID)",
-                isDirectory: true
-            )
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-            let ready: [String: Any] = [
-                "owner_pid": ownerPID,
-                "agent_pid": agentPID,
-                "channel_id": channelID,
-            ]
-            let state: [String: Any] = [
-                "pid": ownerPID,
-                "controlled_apps": apps,
-                "current_app": apps.first ?? "",
-                "controlling": controlling,
-                "lingerUntil": lingerUntil,
-            ]
-            try JSONSerialization.data(withJSONObject: ready).write(
-                to: directory.appendingPathComponent("ready.json")
-            )
-            try JSONSerialization.data(withJSONObject: state).write(
-                to: directory.appendingPathComponent("state.json")
-            )
+    func testServiceSweepsOnlyLegacyOverlayFoldersWhoseOwnerExited() {
+        let names = [
+            "mac-computer-use-overlay-100-aaaa-bbbb",
+            "mac-computer-use-overlay-200-cccc-dddd",
+            "mac-computer-use-overlay-notapid-eeee",
+            "mac-computer-use-update-gate.lock",
+            "unrelated",
+        ]
+        XCTAssertEqual(
+            staleLegacyOverlayChannelNames(names, isAlive: { $0 == 200 }),
+            ["mac-computer-use-overlay-100-aaaa-bbbb"]
+        )
+    }
+
+    func testRiskyActionsAreRecognisedByWholeWords() {
+        XCTAssertEqual(riskyActionPhrase(["Send"]), "send")
+        XCTAssertEqual(riskyActionPhrase([nil, "Move to Trash"]), "move to trash")
+        XCTAssertEqual(riskyActionPhrase(["Place Order"]), "place order")
+        XCTAssertNil(riskyActionPhrase(["Sender details", "Postcode", "Reload"]))
+        XCTAssertNil(riskyActionPhrase([nil, ""]))
+        XCTAssertEqual(riskyConfirmationDelay(environment: [:]), 2)
+        XCTAssertEqual(riskyConfirmationDelay(environment: ["MACCU_RISKY_CONFIRM_MS": "0"]), 0)
+        XCTAssertEqual(riskyConfirmationDelay(environment: ["MACCU_RISKY_CONFIRM_MS": "50000"]), 10)
+    }
+
+    func testAgentsYieldOnlyWhenTheUserIsActiveInTheSameApp() {
+        XCTAssertTrue(shouldYieldToUser(secondsSinceInput: 0.2, targetIsFrontmost: true))
+        XCTAssertFalse(shouldYieldToUser(secondsSinceInput: 0.2, targetIsFrontmost: false))
+        XCTAssertFalse(shouldYieldToUser(secondsSinceInput: 5, targetIsFrontmost: true))
+    }
+
+    func testInteractionToolsRefuseWithoutTheService() {
+        for name in ["point_at", "annotate", "clear_annotations", "ask_user", "pick_element", "wait_for_user"] {
+            let result = dispatchTool(name, ["app": "Finder", "question": "q", "options": ["a", "b"], "instruction": "i"])
+            XCTAssertEqual(result["isError"] as? Bool, true, name)
+            XCTAssertTrue((toolResultText(result) ?? "").hasPrefix("[requires_service]"), name)
         }
+    }
 
-        try writeSession(ownerPID: 101, agentPID: 201, channelID: "live-a", apps: ["Safari"])
-        try writeSession(ownerPID: 102, agentPID: 202, channelID: "live-b", apps: ["Finder", "Safari"])
-        try writeSession(ownerPID: 103, agentPID: 203, channelID: "stale", apps: ["Ghost"])
+    func testElementIndexesAcceptIntegersOrIntegerStrings() {
+        XCTAssertEqual(parseElementIndex("12") ?? nil, 12)
+        XCTAssertEqual(parseElementIndex(NSNumber(value: 7)) ?? nil, 7)
+        XCTAssertNotNil(parseElementIndex(nil))
+        XCTAssertNil(parseElementIndex(nil) ?? nil)
+        XCTAssertNil(parseElementIndex("-1"))
+        XCTAssertNil(parseElementIndex(true))
+    }
 
-        try writeSession(ownerPID: 104, agentPID: 204, channelID: "idle", apps: ["Calculator"], controlling: false)
-        try writeSession(ownerPID: 105, agentPID: 205, channelID: "linger", apps: ["Notes"], controlling: false, lingerUntil: 11)
-        try writeSession(ownerPID: 106, agentPID: 206, channelID: "history", apps: ["Safari", "Old App"])
+    func testToursRoundTripAndMatchElementsBySemanticsNotPixels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("maccu-tours-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let locator = TourLocator(
+            bundleID: "com.example.mail", appName: "Mail", windowTitle: "Inbox",
+            role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: nil
+        )
+        let tour = TourFile(name: "Archive mail", title: "Archive an email", createdAt: Date(timeIntervalSince1970: 0),
+                            steps: [TourStep(instruction: "Click Archive", locator: locator)])
+        let url = try TourStore.save(tour, in: directory)
+        XCTAssertEqual(url.lastPathComponent, "Archive-mail.json")
+        XCTAssertEqual(TourStore.all(in: directory), [tour])
+        XCTAssertNil(TourStore.fileName(for: "../../"))
+        XCTAssertEqual(TourStore.fileName(for: "a/b c"), "ab-c.json")
 
-        let alive: (pid_t) -> Bool = { [101, 102, 104, 105, 106, 201, 202, 204, 205, 206].contains(Int($0)) }
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 10, processIsAlive: alive), ["Finder", "Notes", "Safari"])
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), ["Finder", "Safari"])
+        let archive = TourCandidate(role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: nil)
+        let delete = TourCandidate(role: "AXButton", subrole: nil, title: "Delete", description: nil, identifier: nil)
+        XCTAssertTrue(tourCandidate(archive, matches: locator))
+        XCTAssertFalse(tourCandidate(delete, matches: locator))
+        var byIdentifier = locator
+        byIdentifier.identifier = "archive-button"
+        XCTAssertTrue(tourCandidate(
+            TourCandidate(role: "AXButton", subrole: nil, title: "Archiver", description: nil, identifier: "archive-button"),
+            matches: byIdentifier
+        ))
+        XCTAssertFalse(tourCandidate(
+            TourCandidate(role: "AXButton", subrole: nil, title: "Archive", description: nil, identifier: "other"),
+            matches: byIdentifier
+        ))
+    }
 
-        // A live connection and its overlay can persist indefinitely after end().
-        // Clearing activity must remove every historical app without killing either.
-        for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-            let url = directory.appendingPathComponent("state.json")
-            var state = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-            state["controlling"] = false
-            state["lingerUntil"] = 0
-            try JSONSerialization.data(withJSONObject: state).write(to: url)
-        }
-        XCTAssertEqual(activeOverlayControlledApps(in: root, now: 12, processIsAlive: alive), [])
-        XCTAssertEqual(menuBarPresentation(currentApp: nil, controlledApps: []).statusTitle, "Ready")
+    func testAgentPreviewKeepsTheWindowShapeWithinItsCorner() {
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 1200, height: 800)), CGSize(width: 300, height: 200))
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 800, height: 1600)), CGSize(width: 100, height: 200))
+        XCTAssertEqual(agentCamPreviewSize(for: CGSize(width: 200, height: 100)), CGSize(width: 200, height: 100))
+    }
+
+    func testCursorFadesOutOnlyAfterTheIdleDelay() {
+        XCTAssertEqual(cursorIdleOpacity(now: 100, lastActivity: 0, active: true), 1)
+        XCTAssertEqual(cursorIdleOpacity(now: 7.9, lastActivity: 0, active: false), 1)
+        XCTAssertEqual(cursorIdleOpacity(now: 8.0 + 0.45, lastActivity: 0, active: false), 0, accuracy: 0.0001)
+        let midway = cursorIdleOpacity(now: 8.0 + 0.225, lastActivity: 0, active: false)
+        XCTAssertGreaterThan(midway, 0.2)
+        XCTAssertLessThan(midway, 0.8)
+        XCTAssertEqual(cursorIdleOpacity(now: 9, lastActivity: 0, active: false, fadeAfter: 30), 1)
+    }
+
+    func testReducedMotionPulseNeverScales() {
+        XCTAssertEqual(reducedMotionCursorPulse(now: 10, clickStartedAt: 10, cancelling: false).scale, 1)
+        XCTAssertEqual(reducedMotionCursorPulse(now: 10.1, clickStartedAt: 10, cancelling: false).opacity, 1)
+        XCTAssertEqual(reducedMotionCursorPulse(now: 11, clickStartedAt: 10, cancelling: false).opacity, 0.8)
     }
 
     func testMenuBarLeaseAllowsOneOwnerAndCleanTakeover() throws {

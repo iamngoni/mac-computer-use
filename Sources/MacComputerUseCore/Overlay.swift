@@ -38,7 +38,8 @@ struct MenuBarPresentation {
 
 func menuBarPresentation(
     currentApp: String?,
-    controlledApps: [String]
+    controlledApps: [String],
+    paused: Bool = false
 ) -> MenuBarPresentation {
     let current = currentApp?.trimmingCharacters(in: .whitespacesAndNewlines)
     let visibleCurrent = current.flatMap { $0.isEmpty ? nil : $0 }
@@ -50,8 +51,8 @@ func menuBarPresentation(
     let apps = Array(Set(normalizedApps)).sorted {
         $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
     }
-    let accessibilityLabel: String
-    let statusTitle: String
+    var accessibilityLabel: String
+    var statusTitle: String
     switch apps.count {
     case 0:
         accessibilityLabel = "Mac Computer Use ready"
@@ -63,6 +64,10 @@ func menuBarPresentation(
         accessibilityLabel = "Mac Computer Use active: \(apps.count) apps"
         statusTitle = "Active · \(apps.count) apps"
     }
+    if paused {
+        accessibilityLabel = "Mac Computer Use paused"
+        statusTitle = "Paused · agents stopped by Esc"
+    }
     return MenuBarPresentation(
         buttonTitle: apps.isEmpty ? "" : "\(apps.count)",
         accessibilityLabel: accessibilityLabel,
@@ -72,8 +77,8 @@ func menuBarPresentation(
 }
 
 public struct AutomationCursorAssets {
-    public static let canvasSize = CGSize(width: 36, height: 36)
-    public static let pointerHotspot = CGPoint(x: 8, y: 7.5)
+    public static let canvasSize = CGSize(width: 28, height: 28)
+    public static let pointerHotspot = CGPoint(x: 6.75, y: 6.5)
 
     public let pointer: NSImage
     public let pulse: NSImage
@@ -172,6 +177,14 @@ public struct AutomationStatusBarActions {
     public let checkForUpdates: () -> Void
     public let canCheckForUpdates: () -> Bool
     public let quit: () -> Void
+    public let isPaused: () -> Bool
+    public let setPaused: (Bool) -> Void
+    public let sessions: () -> [ServiceSessionSummary]
+    public let agentPreviewEnabled: () -> Bool
+    public let setAgentPreviewEnabled: (Bool) -> Void
+    public let tours: () -> [(name: String, title: String)]
+    public let playTour: (String) -> Void
+    public let openToursFolder: () -> Void
 
     public init(
         version: String,
@@ -179,7 +192,15 @@ public struct AutomationStatusBarActions {
         showPermissions: @escaping () -> Void,
         checkForUpdates: @escaping () -> Void,
         canCheckForUpdates: @escaping () -> Bool,
-        quit: @escaping () -> Void
+        quit: @escaping () -> Void,
+        isPaused: @escaping () -> Bool = { false },
+        setPaused: @escaping (Bool) -> Void = { _ in },
+        sessions: @escaping () -> [ServiceSessionSummary] = { [] },
+        agentPreviewEnabled: @escaping () -> Bool = { false },
+        setAgentPreviewEnabled: @escaping (Bool) -> Void = { _ in },
+        tours: @escaping () -> [(name: String, title: String)] = { [] },
+        playTour: @escaping (String) -> Void = { _ in },
+        openToursFolder: @escaping () -> Void = {}
     ) {
         self.version = version
         self.setup = setup
@@ -187,6 +208,33 @@ public struct AutomationStatusBarActions {
         self.checkForUpdates = checkForUpdates
         self.canCheckForUpdates = canCheckForUpdates
         self.quit = quit
+        self.isPaused = isPaused
+        self.setPaused = setPaused
+        self.sessions = sessions
+        self.agentPreviewEnabled = agentPreviewEnabled
+        self.setAgentPreviewEnabled = setAgentPreviewEnabled
+        self.tours = tours
+        self.playTour = playTour
+        self.openToursFolder = openToursFolder
+    }
+}
+
+/// Groups live sessions by client for the menu, e.g. "claude · 2 sessions".
+func connectedClientTitles(_ sessions: [ServiceSessionSummary]) -> [String] {
+    var counts: [String: Int] = [:]
+    var pending = Set<String>()
+    for session in sessions {
+        counts[session.clientName, default: 0] += 1
+        if session.approval == "pending" { pending.insert(session.clientName) }
+        if session.approval == "denied" { pending.insert(session.clientName) }
+    }
+    return counts.keys.sorted {
+        $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+    }.map { name in
+        let count = counts[name] ?? 0
+        var title = count == 1 ? name : "\(name) · \(count) sessions"
+        if pending.contains(name) { title += " (not allowed yet)" }
+        return title
     }
 }
 
@@ -208,19 +256,31 @@ final class AutomationStatusBarController {
 
     var isActive: Bool { statusItem.button != nil }
 
+    /// Where the menu-bar item is on screen (Cocoa), for the cursor demo.
+    var buttonFrame: CGRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
     func update(
         currentApp: String?,
         controlledApps: [String]
     ) {
+        let paused = actions?.isPaused() == true
         let presentation = menuBarPresentation(
             currentApp: currentApp,
-            controlledApps: controlledApps
+            controlledApps: controlledApps,
+            paused: paused
         )
+        let clients = connectedClientTitles(actions?.sessions() ?? [])
         let signature = ([
             presentation.accessibilityLabel,
             presentation.statusTitle,
             actions?.canCheckForUpdates() == true ? "updates-enabled" : "updates-disabled",
-        ] + presentation.controlledAppTitles).joined(separator: "\u{1f}")
+            paused ? "paused" : "running",
+            actions?.agentPreviewEnabled() == true ? "preview" : "no-preview",
+            (actions?.tours() ?? []).map(\.name).joined(separator: ","),
+        ] + presentation.controlledAppTitles + ["|"] + clients).joined(separator: "\u{1f}")
         guard signature != lastSignature else { return }
         lastSignature = signature
 
@@ -272,6 +332,54 @@ final class AutomationStatusBarController {
         }
         if let actions {
             menu.addItem(.separator())
+            let pause = NSMenuItem(
+                title: paused ? "Resume Agents" : "Pause Agents",
+                action: #selector(togglePause),
+                keyEquivalent: ""
+            )
+            pause.target = self
+            menu.addItem(pause)
+            let preview = NSMenuItem(
+                title: "Show Agent Preview",
+                action: #selector(togglePreview),
+                keyEquivalent: ""
+            )
+            preview.target = self
+            preview.state = actions.agentPreviewEnabled() ? .on : .off
+            menu.addItem(preview)
+
+            menu.addItem(.separator())
+            let clientsHeading = NSMenuItem(title: "Connected clients", action: nil, keyEquivalent: "")
+            clientsHeading.isEnabled = false
+            menu.addItem(clientsHeading)
+            for title in clients.isEmpty ? ["None"] : clients {
+                let item = NSMenuItem(title: clients.isEmpty ? title : "• " + title, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+
+            menu.addItem(.separator())
+            let toursItem = NSMenuItem(title: "Guided Tours", action: nil, keyEquivalent: "")
+            let toursMenu = NSMenu(title: "Guided Tours")
+            let tours = actions.tours()
+            if tours.isEmpty {
+                let none = NSMenuItem(title: "No saved tours yet", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                toursMenu.addItem(none)
+            }
+            for tour in tours {
+                let item = NSMenuItem(title: tour.title, action: #selector(playTour(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = tour.name
+                toursMenu.addItem(item)
+            }
+            toursMenu.addItem(.separator())
+            let folder = NSMenuItem(title: "Open Tours Folder…", action: #selector(openToursFolder), keyEquivalent: "")
+            folder.target = self
+            toursMenu.addItem(folder)
+            toursItem.submenu = toursMenu
+            menu.addItem(toursItem)
+
             let setup = NSMenuItem(
                 title: "Setup Mac Computer Use…",
                 action: #selector(openSetup),
@@ -318,59 +426,22 @@ final class AutomationStatusBarController {
     }
 
     @objc private func openSetup() { actions?.setup() }
+    @objc private func playTour(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        actions?.playTour(name)
+    }
+    @objc private func openToursFolder() { actions?.openToursFolder() }
+    @objc private func togglePreview() {
+        guard let actions else { return }
+        actions.setAgentPreviewEnabled(!actions.agentPreviewEnabled())
+    }
+    @objc private func togglePause() {
+        guard let actions else { return }
+        actions.setPaused(!actions.isPaused())
+    }
     @objc private func openPermissions() { actions?.showPermissions() }
     @objc private func checkForUpdates() { actions?.checkForUpdates() }
     @objc private func quitManager() { actions?.quit() }
-}
-
-private let overlayIPCDirectoryPrefix = "mac-computer-use-overlay-"
-
-public func overlayProcessIsAlive(_ pid: pid_t) -> Bool {
-    guard pid > 0 else { return false }
-    errno = 0
-    return kill(pid, 0) == 0 || errno == EPERM
-}
-
-public func activeOverlayControlledApps(
-    in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-    now: Double = CACurrentMediaTime(),
-    processIsAlive: (pid_t) -> Bool = overlayProcessIsAlive
-) -> [String] {
-    guard let directories = try? FileManager.default.contentsOfDirectory(
-        at: temporaryDirectory,
-        includingPropertiesForKeys: [.isDirectoryKey],
-        options: [.skipsHiddenFiles]
-    ) else { return [] }
-
-    var applications = Set<String>()
-    for directory in directories where directory.lastPathComponent.hasPrefix(overlayIPCDirectoryPrefix) {
-        guard (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-              let readyData = try? Data(contentsOf: directory.appendingPathComponent("ready.json")),
-              let stateData = try? Data(contentsOf: directory.appendingPathComponent("state.json")),
-              let ready = try? JSONSerialization.jsonObject(with: readyData) as? [String: Any],
-              let state = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
-              let ownerPID = ready["owner_pid"] as? Int,
-              let agentPID = ready["agent_pid"] as? Int,
-              let channelID = ready["channel_id"] as? String,
-              state["pid"] as? Int == ownerPID,
-              directory.lastPathComponent == "\(overlayIPCDirectoryPrefix)\(ownerPID)-\(channelID)",
-              processIsAlive(pid_t(ownerPID)),
-              processIsAlive(pid_t(agentPID)) else {
-            continue
-        }
-        // A connected process is not necessarily performing an action. Never
-        // present its session history as current activity (including older clients).
-        let controlling = state["controlling"] as? Bool ?? false
-        let lingerUntil = state["lingerUntil"] as? Double ?? 0
-        guard controlling || now < lingerUntil else { continue }
-        if let current = state["current_app"] as? String {
-            let normalized = current.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty { applications.insert(normalized) }
-        }
-    }
-    return applications.sorted {
-        $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-    }
 }
 
 final class ExclusiveFileLease {
@@ -405,13 +476,12 @@ public final class AutomationStatusBarCoordinator {
     private var lease: ExclusiveFileLease?
     private var statusBarController: AutomationStatusBarController?
     private var nextLeaseAttempt: CFTimeInterval = 0
-    private var nextApplicationRefresh: CFTimeInterval = 0
     private var aggregatedApplications: [String] = []
 
     public init(
         cursorImage: NSImage,
         actions: AutomationStatusBarActions? = nil,
-        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        temporaryDirectory: URL = macComputerUseCoordinationDirectory()
     ) {
         self.cursorImage = cursorImage
         self.actions = actions
@@ -427,18 +497,16 @@ public final class AutomationStatusBarCoordinator {
 
     public var isActive: Bool { statusBarController?.isActive == true }
 
+    public var statusItemFrame: CGRect? { statusBarController?.buttonFrame }
+
     public func update(currentApp: String?, controlledApps: [String]) {
         let now = CACurrentMediaTime()
         acquireLeaseIfAvailable(now: now)
         guard let statusBarController else { return }
 
-        if now >= nextApplicationRefresh {
-            aggregatedApplications = Array(Set(
-                activeOverlayControlledApps(in: temporaryDirectory) + controlledApps
-            )).sorted {
-                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-            }
-            nextApplicationRefresh = now + 0.25
+        // The service knows its sessions directly; no directory scanning.
+        aggregatedApplications = Array(Set(controlledApps)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
         statusBarController.update(
             currentApp: currentApp,
@@ -455,7 +523,6 @@ public final class AutomationStatusBarCoordinator {
             cursorImage: cursorImage,
             actions: actions
         )
-        nextApplicationRefresh = 0
     }
 }
 
@@ -505,6 +572,34 @@ func cursorPulsePresentation(
         scale: scale,
         opacity: cancelling ? 0.35 : opacity
     )
+}
+
+/// Reduce Motion: no breathing and no scale change. A click shows as a short,
+/// steady brightening of the glow instead.
+func reducedMotionCursorPulse(
+    now: CFTimeInterval,
+    clickStartedAt: CFTimeInterval?,
+    cancelling: Bool
+) -> CursorPulsePresentation {
+    let clicked = clickStartedAt.map { now - $0 >= 0 && now - $0 < 0.3 } ?? false
+    return CursorPulsePresentation(scale: 1, opacity: cancelling ? 0.35 : (clicked ? 1 : 0.8))
+}
+
+/// The cursor stays fully visible while its session acts, then fades out
+/// after it has been idle for `fadeAfter` seconds, so a parked agent never
+/// leaves a cursor on screen.
+func cursorIdleOpacity(
+    now: CFTimeInterval,
+    lastActivity: CFTimeInterval,
+    active: Bool,
+    fadeAfter: TimeInterval = 8,
+    fadeDuration: TimeInterval = 0.45
+) -> CGFloat {
+    if active { return 1 }
+    let idle = now - lastActivity
+    if idle <= fadeAfter { return 1 }
+    let progress = min(max((idle - fadeAfter) / fadeDuration, 0), 1)
+    return CGFloat(1 - progress * progress * (3 - 2 * progress))
 }
 
 struct CursorMotionState {
@@ -561,7 +656,15 @@ struct CursorMotionState {
 
 final class AutomationCursorView: NSView {
     var cancelling = false
+    var reduceMotion = false
     var clickStartedAt: CFTimeInterval?
+    /// Flight pose around the hotspot (radians, counterclockwise) and swell.
+    var rotation: CGFloat = 0
+    var flightScale: CGFloat = 1
+    var glowColor: NSColor = .white
+    var badgeSymbol: String?
+    var shakeStartedAt: CFTimeInterval?
+    var countdown: (start: CFTimeInterval, duration: TimeInterval)?
     private let assets: AutomationCursorAssets
 
     init(frame frameRect: NSRect, assets: AutomationCursorAssets) {
@@ -578,18 +681,28 @@ final class AutomationCursorView: NSView {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         context.clear(dirtyRect)
         let now = CACurrentMediaTime()
-        let pulse = cursorPulsePresentation(
-            now: now,
-            clickStartedAt: clickStartedAt,
-            cancelling: cancelling
+        let pulse = reduceMotion
+            ? reducedMotionCursorPulse(now: now, clickStartedAt: clickStartedAt, cancelling: cancelling)
+            : cursorPulsePresentation(
+                now: now,
+                clickStartedAt: clickStartedAt,
+                cancelling: cancelling
+            )
+        let hotspot = CGPoint(
+            x: bounds.midX + (reduceMotion ? 0 : cursorShakeOffset(now: now, startedAt: shakeStartedAt)),
+            y: bounds.midY
         )
-        // Follow the pointer silhouette with a breathing white edge glow.
-        // Click feedback changes the glow radius without moving the hotspot.
+        // Follow the pointer silhouette with a breathing edge glow. Flight
+        // rotation and swell pivot on the hotspot, so the tip stays exact.
         context.saveGState()
+        context.translateBy(x: hotspot.x, y: hotspot.y)
+        context.rotate(by: rotation)
+        context.scaleBy(x: flightScale, y: flightScale)
+        context.translateBy(x: -bounds.midX, y: -bounds.midY)
         context.setShadow(
             offset: .zero,
-            blur: 2.5 * pulse.scale,
-            color: NSColor.white.withAlphaComponent(pulse.opacity).cgColor
+            blur: 2 * pulse.scale,
+            color: glowColor.withAlphaComponent(pulse.opacity).cgColor
         )
         assets.pointer.draw(
             in: cursorPointerDrawRect(in: bounds),
@@ -598,11 +711,62 @@ final class AutomationCursorView: NSView {
             fraction: cancelling ? 0.65 : 1
         )
         context.restoreGState()
+
+        if let countdown {
+            let remaining = cursorCountdownRemaining(now: now, start: countdown.start, duration: countdown.duration)
+            if remaining > 0 { drawCountdown(context, around: hotspot, remaining: remaining) }
+        }
+        if let badgeSymbol { drawBadge(badgeSymbol, near: hotspot) }
+    }
+
+    private func drawCountdown(_ context: CGContext, around center: CGPoint, remaining: CGFloat) {
+        let radius: CGFloat = 13
+        context.saveGState()
+        context.setLineWidth(2.5)
+        context.setLineCap(.round)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.35).cgColor)
+        context.addArc(center: center, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+        context.strokePath()
+        context.setStrokeColor(NSColor.systemOrange.cgColor)
+        let start = CGFloat.pi / 2
+        context.addArc(
+            center: center,
+            radius: radius,
+            startAngle: start,
+            endAngle: start - .pi * 2 * remaining,
+            clockwise: true
+        )
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func drawBadge(_ symbol: String, near hotspot: CGPoint) {
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) else { return }
+        let diameter: CGFloat = 15
+        let circle = CGRect(x: hotspot.x + 13, y: hotspot.y - 27, width: diameter, height: diameter)
+        NSColor.white.withAlphaComponent(0.95).setFill()
+        NSBezierPath(ovalIn: circle).fill()
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        NSBezierPath(ovalIn: circle.insetBy(dx: 0.25, dy: 0.25)).stroke()
+        let configured = image.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold)) ?? image
+        let tinted = NSImage(size: configured.size, flipped: false) { rect in
+            configured.draw(in: rect)
+            accent.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        let size = tinted.size
+        tinted.draw(in: CGRect(
+            x: circle.midX - size.width / 2,
+            y: circle.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
     }
 }
 
 func makeAutomationCursorPanel(
-    size: CGFloat = 72,
+    size: CGFloat = 80,
     assets: AutomationCursorAssets = .emptyForTesting
 ) -> AutomationCursorPanel {
     let panel = AutomationCursorPanel(
@@ -629,7 +793,9 @@ func makeAutomationCursorPanel(
 final class OverlayView: NSView {
     var controlling = false
     var cancelling = false
+    var paused = false
     var status = ""
+    var hint = "Esc to cancel"
 
 
     override var isFlipped: Bool { false }
@@ -647,7 +813,6 @@ final class OverlayView: NSView {
 
     private func drawBanner(ctx: CGContext) {
         let label = cancelling ? "Cancelling…" : (status.isEmpty ? "mac-computer-use is controlling your Mac" : status)
-        let hint = "Esc to cancel"
         let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         let hintFont = NSFont.systemFont(ofSize: 12, weight: .medium)
         let textColor = NSColor.white
@@ -672,7 +837,7 @@ final class OverlayView: NSView {
         ctx.setShadow(offset: .zero, blur: 0, color: nil)
         // pulsing status dot
         let pulse = 0.5 + 0.5*sin(CACurrentMediaTime()*3.2)
-        let dotColor = cancelling ? NSColor.systemRed : accent
+        let dotColor = cancelling ? NSColor.systemRed : (paused ? NSColor.systemOrange : accent)
         let dotRect = CGRect(x: rect.minX + pad, y: rect.midY - dot/2, width: dot, height: dot)
         dotColor.withAlphaComponent(0.6 + 0.4*pulse).setFill(); NSBezierPath(ovalIn: dotRect).fill()
         aLabel.draw(at: CGPoint(x: dotRect.maxX + 8, y: rect.midY - aLabel.size().height/2))
@@ -737,16 +902,43 @@ final class OverlayController {
     private var agentLaunched = false
     private var launchStartedAt: Double?
     private var lastError: String?
+    /// Set in worker mode: the service renders the overlay and owns Esc.
+    private var serviceChannel: JSONLineChannel?
+    private var cursorPace: CursorPace = .act
+    private var lastCursorMoveAt: CFTimeInterval = 0
+    private var currentWindowID: CGWindowID?
+
+    private var usesService: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return serviceChannel != nil
+    }
+
+    var isServiceAttached: Bool { usesService }
+
+    /// Sends a presentation message (bubble, drawing, countdown) to the
+    /// service. Returns false in-process, where there is no service overlay.
+    @discardableResult
+    func sendToService(_ message: [String: Any]) -> Bool {
+        lock.lock(); let service = serviceChannel; lock.unlock()
+        guard let service else { return false }
+        return service.send(message)
+    }
+
+    func attachServiceChannel(_ channel: JSONLineChannel) {
+        lock.lock(); serviceChannel = channel; lock.unlock()
+    }
 
     func install() {
         captureMode = ProcessInfo.processInfo.environment["MACCU_CAPTURE_OVERLAY"] == "1"
     }
 
     func cleanup() {
+        if usesService { return }
         lock.lock(); let shouldClean = prepared; lock.unlock()
         if shouldClean { paths.cleanup() }
     }
     func resetCancellation() {
+        if usesService { return }
         lock.lock(); let isPrepared = prepared; lock.unlock()
         if isPrepared { try? FileManager.default.removeItem(at: paths.cancelURL) }
     }
@@ -787,6 +979,24 @@ final class OverlayController {
     }
 
     func healthSnapshot() -> [String: Any] {
+        lock.lock()
+        let service = serviceChannel
+        lock.unlock()
+        if let service {
+            lock.lock()
+            let snapshot: [String: Any] = [
+                "transport": "service",
+                "status": service.isOpen ? "running" : "error",
+                "current_app": currentApp ?? NSNull(),
+                "controlled_apps": controlledApps.sorted {
+                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                },
+                "cursor_initialized": cursor != nil,
+                "last_error": lastError ?? NSNull(),
+            ]
+            lock.unlock()
+            return snapshot
+        }
         lock.lock()
         let launchRequested = agentLaunched
         let launchStartedAt = launchStartedAt
@@ -835,6 +1045,7 @@ final class OverlayController {
         }
 
         return [
+            "transport": "agent",
             "status": status,
             "launch_requested": launchRequested,
             "channel_id": paths.channelID,
@@ -872,6 +1083,16 @@ final class OverlayController {
     }
 
     private func ensureAgent() -> pid_t? {
+        lock.lock()
+        let service = serviceChannel
+        lock.unlock()
+        if let service {
+            guard service.isOpen else {
+                recordError("the Mac Computer Use service is no longer connected")
+                return nil
+            }
+            return getppid()
+        }
         agentLaunchLock.lock()
         defer { agentLaunchLock.unlock() }
         guard prepareIPC() else { return nil }
@@ -938,8 +1159,17 @@ final class OverlayController {
         return nil
     }
 
+    /// The in-process overlay agent, whose windows desktop captures exclude.
+    var legacyAgentProcessIdentifier: pid_t? {
+        usesService ? nil : readyAgentPID()
+    }
+
     func agentLeaseIsLive(_ pid: pid_t) -> Bool {
-        readyAgentPID() == pid
+        lock.lock()
+        let service = serviceChannel
+        lock.unlock()
+        if let service { return service.isOpen }
+        return readyAgentPID() == pid
     }
 
     private func writeState() {
@@ -956,8 +1186,17 @@ final class OverlayController {
             "target": target.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? [],
             "flashes": flashes.map { [$0.0.x, $0.0.y, $0.1] },
             "pid": Int(getpid()), "ts": CACurrentMediaTime(),
+            "cursor_pace": cursorPace.rawValue,
+            "window_id": currentWindowID.map { Int($0) } ?? NSNull(),
         ]
+        let service = serviceChannel
         lock.unlock()
+        if let service {
+            var message = dict
+            message["type"] = "state"
+            service.send(message)
+            return
+        }
         do {
             let data = try JSONSerialization.data(withJSONObject: dict)
             try data.write(to: paths.stateURL, options: .atomic)
@@ -972,7 +1211,6 @@ final class OverlayController {
         appName: String?,
         targetQuartz: CGRect?
     ) -> pid_t? {
-        ensureManagerIsRunning()
         guard let agentPID = ensureAgent() else { return nil }
         let resolvedApp = appName ?? appPID.flatMap {
             NSRunningApplication(processIdentifier: $0)?.localizedName
@@ -989,6 +1227,9 @@ final class OverlayController {
         }
         target = targetQuartz
         lingerUntil = 0
+        if let snapshot = lastSnapshot, appPID == nil || snapshot.pid == appPID {
+            currentWindowID = snapshot.windowId
+        }
         lock.unlock()
         writeState()
         return agentPID
@@ -1004,18 +1245,66 @@ final class OverlayController {
         writeState()
     }
     func end() { lock.lock(); controlling = false; lingerUntil = CACurrentMediaTime() + 0.9; lock.unlock(); writeState() }
-    func moveCursorQuartz(_ p: CGPoint) {
-        lock.lock(); cursor = p; lock.unlock(); writeState()
+    /// Moves the virtual cursor. With the service, waits until the cursor
+    /// has landed, so the person sees where an action happens before it does.
+    func moveCursorQuartz(_ p: CGPoint, pace: CursorPace = .act) {
+        let wait = beginCursorMove(to: p, pace: pace)
+        writeState()
+        waitForCursorArrival(wait)
     }
     func flashClickQuartz(_ p: CGPoint) {
+        let wait = beginCursorMove(to: p, pace: .act)
+        if wait > 0 {
+            writeState()
+            waitForCursorArrival(wait)
+        }
         lock.lock(); cursor = p; flashes.append((p, CACurrentMediaTime())); if flashes.count > 8 { flashes.removeFirst(flashes.count - 8) }; lock.unlock(); writeState()
+    }
+
+    /// Records the new target and returns how long the service's flight
+    /// takes. A cursor that has faded out reappears at the target instantly.
+    private func beginCursorMove(to p: CGPoint, pace: CursorPace) -> TimeInterval {
+        let now = CACurrentMediaTime()
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = cursor
+        let recentlyVisible = now - lastCursorMoveAt < 8
+        cursor = p
+        cursorPace = pace
+        lastCursorMoveAt = now
+        guard serviceChannel != nil, recentlyVisible, let previous else { return 0 }
+        return cursorFlightDuration(
+            distance: hypot(p.x - previous.x, p.y - previous.y),
+            pace: pace,
+            multiplier: cursorPaceMultiplier()
+        )
+    }
+
+    private func waitForCursorArrival(_ duration: TimeInterval) {
+        guard duration > 0 else { return }
+        let deadline = CACurrentMediaTime() + min(duration, 1.6)
+        while CACurrentMediaTime() < deadline, !cancelFlag.value { usleep(10_000) }
+    }
+
+    /// Keeps the cursor awake while the person reads a bubble or answers.
+    func touchCursor() {
+        lock.lock(); lastCursorMoveAt = CACurrentMediaTime(); lock.unlock()
+    }
+
+    var cursorQuartz: CGPoint? {
+        lock.lock(); defer { lock.unlock() }
+        return cursor
     }
     func markCancelling() { lock.lock(); cancelling = true; lock.unlock(); writeState() }
     func hideForCapture() {
-        if captureMode { return }
+        // Service overlays are excluded from captures by window; nothing to hide.
+        if captureMode || usesService { return }
         lock.lock(); captureHide = true; lock.unlock(); writeState(); usleep(120_000)
     }
-    func showAfterCapture() { lock.lock(); captureHide = false; lock.unlock(); writeState() }
+    func showAfterCapture() {
+        if usesService { return }
+        lock.lock(); captureHide = false; lock.unlock(); writeState()
+    }
 }
 
 // Run a controlling action with overlay + cancellation scaffolding.
@@ -1026,8 +1315,12 @@ func controlled(
     targetQuartz: CGRect? = nil,
     _ body: () -> [String: Any]
 ) -> [String: Any] {
+    if let refusal = actionGate?() { return refusal }
     cancelFlag.set(false)
     OverlayController.shared.resetCancellation()
+    if let pid = appPID, appName != "Desktop", let busy = yieldToUser(targetPID: pid, appName: appName) {
+        return busy
+    }
     guard let agentPID = OverlayController.shared.begin(
         status: status,
         appPID: appPID,
@@ -1060,7 +1353,21 @@ func controlled(
             isError: true
         )
     }
+    if cancelFlag.value {
+        // Esc is a human brake, not a soft result the agent can talk past.
+        return userInterruptedResult(actionReport: toolResultText(result))
+    }
+    if result["isError"] as? Bool == true {
+        OverlayController.shared.sendToService(["type": "cursor_feedback", "kind": "error"])
+    }
     return result
+}
+
+func toolResultText(_ result: [String: Any]) -> String? {
+    let parts = (result["content"] as? [[String: Any]] ?? []).compactMap { item -> String? in
+        item["type"] as? String == "text" ? item["text"] as? String : nil
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " ")
 }
 
 // MARK: - Overlay agent (separate LaunchServices-launched GUI process)
@@ -1100,7 +1407,12 @@ func runOverlayAgent(
     }
 
     let keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { ev in
-        if ev.keyCode == 53 { FileManager.default.createFile(atPath: cancelPath, contents: nil) }
+        // A desktop_press_key Escape is an intentional global action. Only a
+        // physical Escape should cancel the currently running automation.
+        if ev.keyCode == 53,
+           ev.cgEvent?.getIntegerValueField(.eventSourceUserData) != desktopSyntheticEventUserData {
+            FileManager.default.createFile(atPath: cancelPath, contents: nil)
+        }
     }
 
     let screenObserver = NotificationCenter.default.addObserver(

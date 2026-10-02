@@ -161,6 +161,14 @@ func staleIndexError(_ index: Int) -> [String: Any] {
     toolText("element_index \(index) is not from this app's snapshot (last snapshot: \(lastSnapshot?.appLabel ?? "none")). Call get_app_state for this app first.", isError: true)
 }
 
+func accessibilityElement(atScreenPoint point: CGPoint, pid: pid_t) -> AXUIElement? {
+    var element: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(
+        AXUIElementCreateApplication(pid), Float(point.x), Float(point.y), &element
+    ) == .success else { return nil }
+    return element
+}
+
 func describePoint(_ p: CGPoint, context: SnapshotContext) -> String {
     let px = screenToPixel(p, context)
     return "(\(Int(px.x)),\(Int(px.y))) px"
@@ -238,6 +246,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
             return toolText("Element [\(i)] has no AXPress action (or this is not a single left-click). Use click_method app_post or sky_click.", isError: true)
         }
         return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
+            if let veto = confirmRiskyAction(element: el, point: elementCenter(i)) { return veto }
             if let c = elementCenter(i) { OverlayController.shared.flashClickQuartz(c) }
             if AXUIElementPerformAction(el, "AXPress" as CFString) == .success { return toolText("Pressed [\(i)] (AX, background).") }
             if method == "accessibility" { return toolText("AXPress failed on [\(i)].", isError: true) }
@@ -269,6 +278,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     if method == "sky_click" {
         guard button == .left else { return toolText("sky_click supports the left button only.", isError: true) }
         return controlled("Clicking (SkyLight)", appPID: pid, targetQuartz: tgt) {
+            if let veto = confirmRiskyAction(element: el ?? accessibilityElement(atScreenPoint: p, pid: pid), point: p) { return veto }
             OverlayController.shared.moveCursorQuartz(p)
             if let err = skyClick(
                 screenPoint: p,
@@ -281,6 +291,9 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
     }
 
     return controlled("Clicking", appPID: pid, targetQuartz: tgt) {
+        if button == .left, let veto = confirmRiskyAction(element: el ?? accessibilityElement(atScreenPoint: p, pid: pid), point: p) {
+            return veto
+        }
         OverlayController.shared.moveCursorQuartz(p)
         mouseMoveTo(p, pid: pid); usleep(120_000)
         if cancelFlag.value { return toolText("Cancelled (Esc).") }
@@ -316,7 +329,12 @@ func toolTypeText(_ args: [String: Any]) -> [String: Any] {
 func toolPressKey(_ args: [String: Any]) -> [String: Any] {
     guard let k = args["key"] as? String else { return toolText("press_key needs 'key'.", isError: true) }
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
-    return controlled("Pressing \(k)", appPID: pid) { pressKeyCombo(k, pid: pid) ? toolText("Pressed \(k).") : toolText("Unknown key: \(k).", isError: true) }
+    return controlled("Pressing \(k)", appPID: pid) {
+        switch sendKeyCombo(k, pid: pid) {
+        case .success: return toolText("Pressed \(k).")
+        case .failure(let error): return toolText(error.description, isError: true)
+        }
+    }
 }
 func toolScroll(_ args: [String: Any]) -> [String: Any] {
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
@@ -404,12 +422,12 @@ func toolSecondaryAction(_ args: [String: Any]) -> [String: Any] {
     guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
     guard let action = args["action"] as? String else { return toolText("needs 'action'.", isError: true) }
     let a = action.hasPrefix("AX") ? action : "AX\(action)"
-    return controlled("Action \(a)", appPID: pid, targetQuartz: elementFrame(idx)) { AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true) }
-}
-func toolSelectText(_ args: [String: Any]) -> [String: Any] {
-    guard let pid = pidFor(args) else { return unresolvedAppError(args) }
-    guard let xs = args["element_index"], let idx = Int("\(xs)"), let el = registryElement(idx, forPid: pid) else { return toolText("needs a valid element_index from this app's last get_app_state.", isError: true) }
-    return controlled("Selecting", appPID: pid, targetQuartz: elementFrame(idx)) { _ = AXUIElementPerformAction(el, "AXPress" as CFString); return toolText("Focused [\(idx)].") }
+    return controlled("Action \(a)", appPID: pid, targetQuartz: elementFrame(idx)) {
+        if ["AXPress", "AXConfirm", "AXPick"].contains(a), let veto = confirmRiskyAction(element: el, point: elementCenter(idx)) {
+            return veto
+        }
+        return AXUIElementPerformAction(el, a as CFString) == .success ? toolText("Performed \(a) on [\(idx)].") : toolText("Action failed.", isError: true)
+    }
 }
 
 struct ToolDefinition {
@@ -482,6 +500,57 @@ func toolDefinitions() -> [ToolDefinition] {
                 ["app"]
             ),
             handler: toolGetAppState
+        ),
+        ToolDefinition(
+            name: "get_desktop_state",
+            description: "Capture one display and return a fresh snapshot token plus indexed visible menu/status accessibility elements. Desktop coordinates are screenshot pixels relative to the selected display.",
+            inputSchema: obj(
+                [
+                    "display_id": [
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional active CGDirectDisplayID. Omit to use the main display.",
+                    ],
+                ],
+                []
+            ),
+            handler: toolGetDesktopState
+        ),
+        ToolDefinition(
+            name: "desktop_click",
+            description: "Explicitly click the desktop or a visible indexed menu/status element. This is the only global HID input path and requires allow_global_input: true. Use either element_index or screenshot-pixel x,y, never both.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "snapshot_id": ["type": "string", "minLength": 1],
+                    "element_index": ["type": "integer", "minimum": 0],
+                    "x": screenshotCoordinate,
+                    "y": screenshotCoordinate,
+                    "mouse_button": ["type": "string", "enum": ["left", "right", "middle"]],
+                    "click_count": ["type": "integer", "minimum": 1, "maximum": 3],
+                    "allow_global_input": ["type": "boolean", "const": true],
+                ],
+                "required": ["snapshot_id", "allow_global_input"],
+                "oneOf": [
+                    ["required": ["element_index"]],
+                    ["required": ["x", "y"]],
+                ],
+                "additionalProperties": false,
+            ],
+            handler: toolDesktopClick
+        ),
+        ToolDefinition(
+            name: "desktop_press_key",
+            description: "Explicitly press a key or combo through global HID input. Requires a fresh get_desktop_state snapshot and allow_global_input: true.",
+            inputSchema: obj(
+                [
+                    "snapshot_id": ["type": "string", "minLength": 1],
+                    "key": string,
+                    "allow_global_input": ["type": "boolean", "const": true],
+                ],
+                ["snapshot_id", "key", "allow_global_input"]
+            ),
+            handler: toolDesktopPressKey
         ),
         ToolDefinition(
             name: "click",
@@ -565,17 +634,35 @@ func toolDefinitions() -> [ToolDefinition] {
         ),
         ToolDefinition(
             name: "select_text",
-            description: "Focus a text element.",
+            description: "Select text inside a text element via accessibility (background, never clicks or presses). 'text' must occur exactly (case-sensitive) in the element's full value; if it occurs more than once the call fails unless prefix/suffix/occurrence pick one. selection cursor_before/cursor_after places the caret instead. The result is read back and verified. Secure (password) fields are refused.",
             inputSchema: obj(
-                ["app": app, "element_index": string, "text": string],
+                [
+                    "app": app,
+                    "element_index": string,
+                    "text": ["type": "string", "minLength": 1, "description": "Exact text to select."],
+                    "prefix": ["type": "string", "description": "Only match where this text immediately precedes it."],
+                    "suffix": ["type": "string", "description": "Only match where this text immediately follows it."],
+                    "occurrence": ["type": "integer", "minimum": 1, "description": "1-based pick among the remaining matches. Required when more than one remains."],
+                    "selection": [
+                        "type": "string",
+                        "enum": TextSelectionMode.allCases.map(\.rawValue),
+                        "description": "text (default) selects the match; cursor_before/cursor_after place a zero-length caret at its start/end.",
+                    ],
+                ],
                 ["app", "element_index", "text"]
             ),
             handler: toolSelectText
         ),
         ToolDefinition(
             name: "open_app",
-            description: "Launch an app (or activate it if already running). Works for any macOS app — browsers, Music, Notes, etc. Use this to switch focus to an app before interacting, or to start one that isn't open.",
-            inputSchema: obj(["app": app], ["app"]),
+            description: "Launch an app that isn't running, or bring a running one to the front. You do not need this to interact with a running app: every other tool works on background apps without taking focus. Set background=true to launch without bringing the app forward (and to leave an already running app where it is).",
+            inputSchema: obj([
+                "app": app,
+                "background": [
+                    "type": "boolean",
+                    "description": "Launch or keep the app in the background instead of activating it. Default false.",
+                ],
+            ], ["app"]),
             handler: toolOpenApp
         ),
         ToolDefinition(
@@ -643,6 +730,133 @@ func toolDefinitions() -> [ToolDefinition] {
             handler: toolInvokeMenu
         ),
         ToolDefinition(
+            name: "point_at",
+            description: "Show the user something without touching it: the cursor flies to an element (or x,y) from the last get_app_state and shows an optional label bubble. Nothing is clicked or focused. Use it to teach, or to show what you are about to act on.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "element_index": ["type": ["string", "integer"], "description": "Element from the last get_app_state of this app."],
+                    "x": screenshotCoordinate,
+                    "y": screenshotCoordinate,
+                    "label": ["type": "string", "maxLength": 160, "description": "Short text shown beside the cursor."],
+                    "hold_ms": ["type": "integer", "minimum": 500, "maximum": 15000, "description": "How long the label stays. Default 4000."],
+                ],
+                ["app"]
+            ),
+            handler: toolPointAt
+        ),
+        ToolDefinition(
+            name: "annotate",
+            description: "Draw on screen over an app to explain something: rectangles, ellipses, arrows, lines, freehand paths and pill labels, plus an optional caption, in screenshot pixels or pinned to element_index. Strokes draw themselves in, never receive clicks, are hidden from your screenshots, and clear after duration_ms or if the window moves.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "items": [
+                        "type": "array",
+                        "maxItems": 24,
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "shape": ["type": "string", "enum": ["rect", "ellipse", "arrow", "line", "path", "label"]],
+                                "element_index": ["type": ["string", "integer"]],
+                                "x": number, "y": number, "width": number, "height": number,
+                                "from": ["type": "array", "items": number, "minItems": 2, "maxItems": 2],
+                                "to": ["type": "array", "items": number, "minItems": 2, "maxItems": 2],
+                                "at": ["type": "array", "items": number, "minItems": 2, "maxItems": 2],
+                                "points": ["type": "array", "items": ["type": "array", "items": number]],
+                                "text": ["type": "string", "maxLength": 60],
+                                "color": ["type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "black"]],
+                            ],
+                            "required": ["shape"],
+                        ],
+                    ],
+                    "caption": ["type": "string", "maxLength": 200, "description": "Subtitle shown along the bottom of the window."],
+                    "duration_ms": ["type": "integer", "minimum": 1000, "maximum": 60000, "description": "Default 8000."],
+                ],
+                ["app"]
+            ),
+            handler: toolAnnotate
+        ),
+        ToolDefinition(
+            name: "clear_annotations",
+            description: "Remove everything annotate drew.",
+            inputSchema: obj([:], []),
+            handler: toolClearAnnotations
+        ),
+        ToolDefinition(
+            name: "ask_user",
+            description: "Ask the user a short question with 2 to 4 answer chips beside your cursor and wait for their click. Only a physical click by the user counts; your own input tools cannot answer it.",
+            inputSchema: obj(
+                [
+                    "question": ["type": "string", "maxLength": 200],
+                    "options": ["type": "array", "items": ["type": "string", "maxLength": 40], "minItems": 2, "maxItems": 4],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                ],
+                ["question", "options"]
+            ),
+            handler: toolAskUser
+        ),
+        ToolDefinition(
+            name: "pick_element",
+            description: "Let the user point back: their next click (or several clicks, then Done) is captured instead of reaching the app, and you get the app, element and, when it is in your last snapshot, its element_index and coordinates.",
+            inputSchema: obj(
+                [
+                    "prompt": ["type": "string", "maxLength": 160, "description": "e.g. Click the email you mean"],
+                    "multiple": ["type": "boolean", "description": "Collect several clicks until the user presses Done."],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                ],
+                []
+            ),
+            handler: toolPickElement
+        ),
+        ToolDefinition(
+            name: "wait_for_user",
+            description: "Hand a step to the user (passwords, 2FA codes, permission dialogs, anything you should not do yourself): point at the element with an instruction and wait until they click it or change its value. Secure fields are only watched by length; their contents are never read.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "element_index": ["type": ["string", "integer"]],
+                    "x": screenshotCoordinate,
+                    "y": screenshotCoordinate,
+                    "instruction": ["type": "string", "maxLength": 160, "description": "e.g. Enter your password, then click Sign In"],
+                    "until": ["type": "string", "enum": ["click", "value_change", "either"], "description": "Default either."],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                ],
+                ["app", "instruction"]
+            ),
+            handler: toolWaitForUser
+        ),
+        ToolDefinition(
+            name: "guide",
+            description: "Walk the user through a task step by step: for each step the cursor points at an element with an instruction and waits until the user clicks it, then moves on. Steps may carry annotate items. Set save_as to keep the tour (element-based, not pixels) so the user can replay it later from the Mac Computer Use menu without you.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "steps": [
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "element_index": ["type": ["string", "integer"]],
+                                "x": number,
+                                "y": number,
+                                "instruction": ["type": "string", "maxLength": 140],
+                                "annotate": ["type": "array", "items": ["type": "object"]],
+                            ],
+                            "required": ["instruction"],
+                        ],
+                    ],
+                    "title": ["type": "string", "maxLength": 80],
+                    "save_as": ["type": "string", "maxLength": 60, "description": "Name to save the tour under. Every step must use element_index."],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Per step. Default 120."],
+                ],
+                ["app", "steps"]
+            ),
+            handler: toolGuide
+        ),
+        ToolDefinition(
             name: "health_report",
             description: "Report permission, process, bundle, overlay, app/window-resolution, and input-safety health as machine-readable JSON without prompting for permissions.",
             inputSchema: obj([:], []),
@@ -662,5 +876,6 @@ func dispatchTool(_ name: String, _ args: [String: Any]) -> [String: Any] {
     guard let tool = toolDefinitions().first(where: { $0.name == name }) else {
         return toolText("Unknown tool: \(name)", isError: true)
     }
+    if let refusal = toolCallGate?(name) { return refusal }
     return tool.handler(args)
 }

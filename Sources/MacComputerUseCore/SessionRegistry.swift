@@ -7,11 +7,13 @@ private let updateGateName = "mac-computer-use-update-gate.lock"
 private let updateMarkerName = "mac-computer-use-update-in-progress.json"
 private let managerLockName = "mac-computer-use-manager.lock"
 private let managerMarkerName = "mac-computer-use-manager.json"
+private let globalInputLockName = "mac-computer-use-global-input.lock"
 
 public enum MacComputerUseLaunchMode: Equatable {
     case manager
     case mcp
     case overlay
+    case worker
 }
 
 public func macComputerUseLaunchMode(
@@ -19,8 +21,32 @@ public func macComputerUseLaunchMode(
     standardInputIsPipe: Bool
 ) -> MacComputerUseLaunchMode {
     if arguments.contains("overlay") { return .overlay }
-    if arguments.dropFirst().first == "mcp" { return .mcp }
+    switch arguments.dropFirst().first {
+    case "worker": return .worker
+    case "mcp": return .mcp
+    case "manager": return .manager // explicit, even when stdin is a pipe
+    default: break
+    }
     return standardInputIsPipe ? .mcp : .manager
+}
+
+/// Where the update gate, manager lock and global input lock live. It is the
+/// stable per-user runtime directory, so every relay, worker and service agrees
+/// even when a client overrides $TMPDIR.
+public func macComputerUseCoordinationDirectory(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> URL {
+    (try? MacComputerUseRuntime.prepareDirectory(environment: environment))
+        ?? MacComputerUseRuntime.directory(environment: environment)
+}
+
+/// True while an update holds the exclusive gate and has not yet relaunched.
+public func macComputerUseUpdateInProgress(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Bool {
+    FileManager.default.fileExists(
+        atPath: updateMarkerURL(in: macComputerUseCoordinationDirectory(environment: environment)).path
+    )
 }
 
 public func standardInputIsPipe(fileDescriptor: Int32 = STDIN_FILENO) -> Bool {
@@ -45,7 +71,7 @@ public final class MCPProcessSessionLease {
     }
 
     public static func acquire(
-        in temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        in temporaryDirectory: URL = macComputerUseCoordinationDirectory()
     ) -> MCPProcessSessionLease? {
         guard !FileManager.default.fileExists(
             atPath: updateMarkerURL(in: temporaryDirectory).path
@@ -76,6 +102,42 @@ public final class MCPProcessSessionLease {
     }
 }
 
+/// A process-wide, nonblocking lease for the only APIs that can affect the
+/// user's hardware pointer and the currently focused application. Application-
+/// scoped events do not need this lease because they are delivered with
+/// `postToPid`.
+public final class GlobalInputLease {
+    private var descriptor: Int32?
+
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    public static func acquire(
+        in temporaryDirectory: URL = macComputerUseCoordinationDirectory()
+    ) -> GlobalInputLease? {
+        let lockURL = temporaryDirectory.appendingPathComponent(globalInputLockName)
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return nil }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        return GlobalInputLease(descriptor: descriptor)
+    }
+
+    /// Release explicitly so callers can guarantee the lease is relinquished
+    /// with `defer`, even when an action fails part-way through.
+    public func release() {
+        guard let descriptor else { return }
+        self.descriptor = nil
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+
+    deinit { release() }
+}
+
 public final class ManagerProcessLease {
     private let descriptor: Int32
     private let markerURL: URL
@@ -93,7 +155,7 @@ public final class ManagerProcessLease {
     }
 
     public static func acquire(
-        in temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        in temporaryDirectory: URL = macComputerUseCoordinationDirectory()
     ) -> ManagerProcessLease? {
         let lockURL = temporaryDirectory.appendingPathComponent(managerLockName)
         let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
@@ -120,7 +182,7 @@ public final class ManagerProcessLease {
 }
 
 public func managerProcessIsRunning(
-    in temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    in temporaryDirectory: URL = macComputerUseCoordinationDirectory(),
     isProcessAlive: (pid_t) -> Bool = { pid in
         guard pid > 0 else { return false }
         errno = 0
@@ -163,7 +225,7 @@ public final class ExclusiveUpdateLease {
     public static func acquire(
         version: String,
         keepsMarkerAfterRelease: Bool = false,
-        in temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        in temporaryDirectory: URL = macComputerUseCoordinationDirectory()
     ) -> ExclusiveUpdateLease? {
         let descriptor = open(
             updateGateURL(in: temporaryDirectory).path,
@@ -191,7 +253,7 @@ public final class ExclusiveUpdateLease {
     }
 
     public static func recoverStaleMarker(
-        in temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        in temporaryDirectory: URL = macComputerUseCoordinationDirectory()
     ) {
         guard let lease = ExclusiveUpdateLease.acquire(
             version: "recovery",

@@ -114,28 +114,25 @@ func applicationTargetError(_ spec: String) -> String {
 
 // Bring an app to the front before synthesizing input, so keystrokes/clicks land in
 // the right place. Without this, input goes to whatever app is currently frontmost.
-func activateApp(_ spec: String) {
-    guard let app = resolveApp(spec) else { return }
-    if !app.isActive {
-        app.activate(options: [.activateAllWindows])
-        usleep(220_000) // let the window server bring it forward
-    }
-}
-
-// Launch an app if not running, otherwise just activate it. Returns a status string.
-func launchOrActivate(_ spec: String) -> (ok: Bool, msg: String) {
+// Launch an app if not running, otherwise just activate it. With `background`,
+// a running app is left where it is and a launched one is not brought forward.
+func launchOrActivate(_ spec: String, background: Bool = false) -> (ok: Bool, msg: String) {
     if let app = resolveApp(spec) {
+        if background {
+            return (true, "\(app.localizedName ?? spec) is already running; left in the background.")
+        }
         app.activate(options: [.activateAllWindows]); usleep(150_000)
         return (true, "Activated \(app.localizedName ?? spec).")
     }
     let ws = NSWorkspace.shared
     // by bundle id
-    if let url = ws.urlForApplication(withBundleIdentifier: spec) {
+    if !background, let url = ws.urlForApplication(withBundleIdentifier: spec) {
         ws.open(url); usleep(600_000); return (true, "Launched \(spec).")
     }
-    // by app name / path via `open -a`
+    // by bundle id or app name / path via `open`; -g keeps it in the background
+    let byBundleID = ws.urlForApplication(withBundleIdentifier: spec) != nil
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    p.arguments = ["-a", spec]
+    p.arguments = (background ? ["-g"] : []) + (byBundleID ? ["-b", spec] : ["-a", spec])
     do { try p.run(); p.waitUntilExit() } catch { return (false, "Could not launch \(spec).") }
     usleep(700_000)
     return (p.terminationStatus == 0, p.terminationStatus == 0 ? "Launched \(spec)." : "App not found: \(spec).")
@@ -179,6 +176,7 @@ func toolOpenApp(_ args: [String: Any]) -> [String: Any] {
         return toolText(applicationTargetError(spec), isError: true)
     }
     let existing = initialMatches.first
+    let background = strictJSONBoolean(args["background"]) ?? false
     return controlled(
         "Opening \(existing?.localizedName ?? spec)",
         appPID: existing?.processIdentifier,
@@ -186,7 +184,7 @@ func toolOpenApp(_ args: [String: Any]) -> [String: Any] {
     ) {
         let completion = completeOpenAppLaunch(
             spec: spec,
-            launchResult: launchOrActivate(spec),
+            launchResult: launchOrActivate(spec, background: background),
             resolver: { resolveApp(spec) }
         )
         if let resolved = completion.app {
