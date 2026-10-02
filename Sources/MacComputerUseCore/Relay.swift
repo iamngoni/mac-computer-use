@@ -51,9 +51,11 @@ func relayLocalReply(to message: [String: Any], reason: RelayUnavailableReason) 
 }
 
 /// The reply for a request that was in flight when the service went away.
-func relayDisconnectedReply(id: Any, method: String) -> [String: Any] {
+/// When the user quit the app, that is the reason the agent needs to hear.
+func relayDisconnectedReply(id: Any, method: String, stoppedByUser: Bool = false) -> [String: Any] {
     if method == "tools/call" {
-        return ["jsonrpc": "2.0", "id": id, "result": toolText(relayDisconnectedToolMessage, isError: true)]
+        let message = stoppedByUser ? RelayUnavailableReason.stoppedByUser.toolMessage : relayDisconnectedToolMessage
+        return ["jsonrpc": "2.0", "id": id, "result": toolText(message, isError: true)]
     }
     return [
         "jsonrpc": "2.0", "id": id,
@@ -332,13 +334,12 @@ final class MCPRelay: @unchecked Sendable {
         descriptor = nil
         let pending = inFlight
         inFlight.removeAll()
-        lastReason = MacComputerUseRuntime.userStoppedService(environment: environment)
-            ? .stoppedByUser
-            : .launchFailed("the service stopped")
+        let stoppedByUser = MacComputerUseRuntime.userStoppedService(environment: environment)
+        lastReason = stoppedByUser ? .stoppedByUser : .launchFailed("the service stopped")
         lock.unlock()
         close(connection)
         for (_, request) in pending {
-            writeToClient(relayDisconnectedReply(id: request.id, method: request.method))
+            writeToClient(relayDisconnectedReply(id: request.id, method: request.method, stoppedByUser: stoppedByUser))
         }
     }
 
