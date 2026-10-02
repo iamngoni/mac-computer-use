@@ -63,13 +63,15 @@ jobs:
           # importing it as a certificate alone leaves no signing identity.
           security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -t agg -T /usr/bin/codesign -k "$keychain"
           rm "$certificate"
-          # Apple's Developer ID G2 intermediate, pinned by fingerprint, so the
-          # identity validates on a Mac that never installed it via Xcode.
-          intermediate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
-          curl -fsSL --retry 3 -o "$intermediate" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $intermediate" | shasum -a 256 -c -
-          security import "$intermediate" -t cert -k "$keychain"
-          rm "$intermediate"
+          # Apple's Developer ID G2 intermediate, pinned by fingerprint, for a
+          # .p12 exported without it; the identity cannot validate otherwise.
+          if ! security find-certificate -a -Z "$keychain" | grep -q "SHA-1 hash: 5B45F61068B29FCC8FFFF1A7E99B78DA9E9C4635"; then
+            intermediate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+            curl -fsSL --retry 3 -o "$intermediate" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+            echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $intermediate" | shasum -a 256 -c -
+            security import "$intermediate" -t cert -k "$keychain"
+            rm "$intermediate"
+          fi
           security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" "$keychain"
           if ! security find-identity -v -p codesigning "$keychain" | grep -q "Developer ID Application"; then
             echo "The signing keychain has no valid Developer ID Application identity." >&2
