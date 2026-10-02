@@ -26,7 +26,33 @@ Configure these GitHub Actions secrets:
 | `SPARKLE_PRIVATE_KEY` | Private Ed25519 key exported for CI |
 | `SPARKLE_PUBLIC_ED_KEY` | Matching public key embedded in release builds |
 
-The workflow imports the certificate into an isolated temporary keychain and deletes it even when packaging fails. Local builds do not require these secrets and omit all updater configuration.
+The workflow imports the certificate into an isolated temporary keychain and deletes it even when packaging fails. Local builds do not require these secrets and omit all updater configuration; `build.sh` signs them with the Developer ID identity from your keychain when one is present.
+
+## Publish from a Mac
+
+When no self-hosted runner is online, the same release can be cut on a Mac that holds the Developer ID certificate. The credentials stay in the login keychain:
+
+1. Store notarization credentials once. `notarytool` prompts for an [app-specific password](https://support.apple.com/102654):
+
+   ```bash
+   xcrun notarytool store-credentials maccu-notary --apple-id "<apple-id>" --team-id 4973Y692JU
+   ```
+
+2. Create the Sparkle key once (after `swift package resolve`). It is saved in the login keychain and the public key is printed. Back it up with `generate_keys -x <file>`; losing it means installed copies can no longer verify updates:
+
+   ```bash
+   .build/artifacts/sparkle/Sparkle/bin/generate_keys
+   ```
+
+3. Merge the `VERSION` change, tag the merge commit `v<VERSION>`, push the tag, then run:
+
+   ```bash
+   NOTARY_KEYCHAIN_PROFILE=maccu-notary ./scripts/publish_release.sh
+   ```
+
+The script refuses a dirty tree, an untagged or unpushed `HEAD`, or a release that already exists. It runs the tests, then `package_release.sh` (universal build, notarize and staple the app and DMG, sign the Sparkle ZIP and appcast, render the cask), and publishes the four artifacts with `gh release create`.
+
+To let the workflow publish later releases, add the Sparkle key with `generate_keys -x` and the certificate as a base64 `.p12` to the secrets above. Use the same Sparkle key in both places.
 
 ## Cut a release
 
