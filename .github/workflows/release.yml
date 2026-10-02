@@ -78,6 +78,19 @@ jobs:
             security find-identity -p codesigning "$keychain" | tail -n 1 >&2
             exit 1
           fi
+          # codesign only finds identities in keychains on the search list.
+          # Put this one first and keep the runner user's own keychains; the
+          # cleanup step restores the saved list.
+          security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//' > "$RUNNER_TEMP/maccu-keychains.txt"
+          keychains=("$keychain")
+          while IFS= read -r path; do
+            if [[ -n "$path" && "$path" != "$keychain" ]]; then keychains+=("$path"); fi
+          done < "$RUNNER_TEMP/maccu-keychains.txt"
+          security list-keychains -d user -s "${keychains[@]}"
+          probe="$RUNNER_TEMP/maccu-sign-probe"
+          cp /usr/bin/true "$probe"
+          codesign --force --sign "$CODE_SIGN_IDENTITY" --keychain "$keychain" --timestamp=none "$probe"
+          rm "$probe"
 
       - name: Test source
         run: swift test -Xswiftc -warnings-as-errors
@@ -101,4 +114,12 @@ jobs:
       - name: Remove temporary signing keychain
         if: always()
         run: |
+          if [[ -f "$RUNNER_TEMP/maccu-keychains.txt" ]]; then
+            keychains=()
+            while IFS= read -r path; do
+              if [[ -n "$path" && "$path" != "$SIGNING_KEYCHAIN" ]]; then keychains+=("$path"); fi
+            done < "$RUNNER_TEMP/maccu-keychains.txt"
+            if [[ ${#keychains[@]} -gt 0 ]]; then security list-keychains -d user -s "${keychains[@]}"; fi
+            rm "$RUNNER_TEMP/maccu-keychains.txt"
+          fi
           security delete-keychain "$SIGNING_KEYCHAIN" 2>/dev/null || true
