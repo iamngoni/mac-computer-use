@@ -28,7 +28,7 @@ App tools work on background apps and do not move the user's real pointer. `get_
 
 ## Talking to the user through the cursor
 
-- `point_at`: fly the cursor to an element with a short label, without clicking. Use it to show what you are about to act on or to teach.
+- `point_at`: fly the cursor to an element with a short label, without clicking. Use it to show what you are about to act on or to teach etc.
 - `annotate`: draw boxes, ellipses, arrows, lines and labels, plus an optional caption, pinned to `element_index` where possible. Call `clear_annotations` when you are done.
 - `ask_user`: ask a short question with 2 to 4 answer chips beside the cursor. Only the user's physical click answers it.
 - `pick_element`: let the user click the thing they mean; you get its app, element and `element_index`.
