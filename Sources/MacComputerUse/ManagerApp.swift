@@ -73,7 +73,8 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             setVoiceEnabled: { [weak host] enabled in host?.voiceEnabled = enabled },
             tours: { [weak host] in (host?.savedTours ?? []).map { (name: $0.name, title: $0.title) } },
             playTour: { [weak host] name in host?.playTour(named: name) },
-            openToursFolder: { [weak host] in host?.openToursFolder() }
+            openToursFolder: { [weak host] in host?.openToursFolder() },
+            allowClient: { [weak host] key in host?.promptToAllowClient(key) }
         )
         let coordinator = AutomationStatusBarCoordinator(
             cursorImage: cursor,
