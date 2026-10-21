@@ -506,6 +506,20 @@ public final class ServiceHost {
         decide(identity, allowed: true)
     }
 
+    /// Shows the usual approval prompt for a connected client that is not
+    /// allowed yet, so the user can allow it from the menu bar.
+    public func promptToAllowClient(_ key: String) {
+        guard let identity = deniedThisRun[key]
+            ?? sessions.values.first(where: { $0.client.key == key && $0.approval != "approved" })?.client else { return }
+        if approvalState(for: identity) == "approved" {
+            decide(identity, allowed: true)
+            return
+        }
+        guard approvalPromptKey != key, !promptQueue.contains(where: { $0.key == key }) else { return }
+        promptQueue.append(identity)
+        presentNextPrompt()
+    }
+
     public func revokeClient(_ key: String) {
         approvals.revoke(key)
         for session in sessions.values where session.client.key == key {
@@ -1059,13 +1073,16 @@ public final class ServiceHost {
     }
 
     private var approvalPrompt: ApprovalPrompt?
+    private var approvalPromptKey: String?
 
     private func presentNextPrompt() {
         guard approvalPrompt == nil, !promptQueue.isEmpty else { return }
         let identity = promptQueue.removeFirst()
+        approvalPromptKey = identity.key
         approvalPrompt = ApprovalPrompt(identity: identity) { [weak self] allowed in
             guard let self else { return }
             self.approvalPrompt = nil
+            self.approvalPromptKey = nil
             self.decide(identity, allowed: allowed)
             self.presentNextPrompt()
         }

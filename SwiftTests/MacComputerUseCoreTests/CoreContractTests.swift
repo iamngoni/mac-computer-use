@@ -685,6 +685,13 @@ final class CoreContractTests: XCTestCase {
             ["ChatGPT (not allowed yet)", "claude · 2 sessions"]
         )
         XCTAssertEqual(connectedClientTitles([]), [])
+        XCTAssertEqual(
+            connectedClientRows([
+                summary("1", "claude", "approved"),
+                summary("3", "ChatGPT", "denied"),
+            ]).map(\.pendingKey),
+            ["k-ChatGPT", nil]
+        )
     }
 
     func testServiceSweepsOnlyLegacyOverlayFoldersWhoseOwnerExited() {

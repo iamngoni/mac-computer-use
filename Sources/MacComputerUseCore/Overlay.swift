@@ -187,6 +187,7 @@ public struct AutomationStatusBarActions {
     public let tours: () -> [(name: String, title: String)]
     public let playTour: (String) -> Void
     public let openToursFolder: () -> Void
+    public let allowClient: (String) -> Void
 
     public init(
         version: String,
@@ -204,7 +205,8 @@ public struct AutomationStatusBarActions {
         setVoiceEnabled: @escaping (Bool) -> Void = { _ in },
         tours: @escaping () -> [(name: String, title: String)] = { [] },
         playTour: @escaping (String) -> Void = { _ in },
-        openToursFolder: @escaping () -> Void = {}
+        openToursFolder: @escaping () -> Void = {},
+        allowClient: @escaping (String) -> Void = { _ in }
     ) {
         self.version = version
         self.setup = setup
@@ -222,25 +224,33 @@ public struct AutomationStatusBarActions {
         self.tours = tours
         self.playTour = playTour
         self.openToursFolder = openToursFolder
+        self.allowClient = allowClient
     }
 }
 
 /// Groups live sessions by client for the menu, e.g. "claude · 2 sessions".
 func connectedClientTitles(_ sessions: [ServiceSessionSummary]) -> [String] {
+    connectedClientRows(sessions).map(\.title)
+}
+
+/// Menu rows for live clients. `pendingKey` is set on a client that is not
+/// allowed yet, so its row can ask the user to allow it.
+func connectedClientRows(_ sessions: [ServiceSessionSummary]) -> [(title: String, pendingKey: String?)] {
     var counts: [String: Int] = [:]
-    var pending = Set<String>()
+    var pending: [String: String] = [:]
     for session in sessions {
         counts[session.clientName, default: 0] += 1
-        if session.approval == "pending" { pending.insert(session.clientName) }
-        if session.approval == "denied" { pending.insert(session.clientName) }
+        if session.approval == "pending" || session.approval == "denied" {
+            pending[session.clientName] = pending[session.clientName] ?? session.clientKey
+        }
     }
     return counts.keys.sorted {
         $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
     }.map { name in
         let count = counts[name] ?? 0
         var title = count == 1 ? name : "\(name) · \(count) sessions"
-        if pending.contains(name) { title += " (not allowed yet)" }
-        return title
+        if pending[name] != nil { title += " (not allowed yet)" }
+        return (title, pending[name])
     }
 }
 
@@ -278,7 +288,8 @@ final class AutomationStatusBarController {
             controlledApps: controlledApps,
             paused: paused
         )
-        let clients = connectedClientTitles(actions?.sessions() ?? [])
+        let clientRows = connectedClientRows(actions?.sessions() ?? [])
+        let clients = clientRows.map { $0.title + ($0.pendingKey.map { "#" + $0 } ?? "") }
         let signature = ([
             presentation.accessibilityLabel,
             presentation.statusTitle,
@@ -367,9 +378,21 @@ final class AutomationStatusBarController {
             let clientsHeading = NSMenuItem(title: "Connected clients", action: nil, keyEquivalent: "")
             clientsHeading.isEnabled = false
             menu.addItem(clientsHeading)
-            for title in clients.isEmpty ? ["None"] : clients {
-                let item = NSMenuItem(title: clients.isEmpty ? title : "• " + title, action: nil, keyEquivalent: "")
-                item.isEnabled = false
+            if clientRows.isEmpty {
+                let none = NSMenuItem(title: "None", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                menu.addItem(none)
+            }
+            for row in clientRows {
+                let item = NSMenuItem(title: "• " + row.title, action: nil, keyEquivalent: "")
+                if let key = row.pendingKey {
+                    item.title += " — Allow…"
+                    item.action = #selector(allowClient(_:))
+                    item.target = self
+                    item.representedObject = key
+                } else {
+                    item.isEnabled = false
+                }
                 menu.addItem(item)
             }
 
@@ -446,6 +469,10 @@ final class AutomationStatusBarController {
         actions?.playTour(name)
     }
     @objc private func openToursFolder() { actions?.openToursFolder() }
+    @objc private func allowClient(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        actions?.allowClient(key)
+    }
     @objc private func togglePreview() {
         guard let actions else { return }
         actions.setAgentPreviewEnabled(!actions.agentPreviewEnabled())
