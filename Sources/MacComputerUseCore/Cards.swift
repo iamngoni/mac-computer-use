@@ -214,6 +214,7 @@ final class JobBoard {
         }
     }
 
+    @MainActor
     private final class Target: NSObject {
         var action: () -> Void = {}
         @objc func fire() {
