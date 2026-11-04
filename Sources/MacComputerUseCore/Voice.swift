@@ -45,6 +45,10 @@ final class ServiceVoice: NSObject, AVSpeechSynthesizerDelegate {
     private var completions: [ObjectIdentifier: (SpeechOutcome) -> Void] = [:]
     private var silentCompletions: [UUID: (SpeechOutcome) -> Void] = [:]
     var isEnabled: () -> Bool = { VoicePreference.isEnabled }
+    /// Caption hooks: an utterance starts, reaches a word, or ends.
+    var onStart: ((String) -> Void)?
+    var onWord: ((NSRange) -> Void)?
+    var onEnd: (() -> Void)?
 
     init(environment: [String: String]) {
         switch environment["MACCU_VOICE"]?.lowercased() {
@@ -66,7 +70,12 @@ final class ServiceVoice: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
-    func speak(_ text: String, completion: @escaping (SpeechOutcome) -> Void = { _ in }) {
+    func speak(
+        _ text: String,
+        rate: Double? = nil,
+        voice: String? = nil,
+        completion: @escaping (SpeechOutcome) -> Void = { _ in }
+    ) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSpeak, !text.isEmpty else {
             completion(.muted)
@@ -75,12 +84,20 @@ final class ServiceVoice: NSObject, AVSpeechSynthesizerDelegate {
         if mode == .silent {
             let token = UUID()
             silentCompletions[token] = completion
+            onStart?(text)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                MainActor.assumeIsolated { self?.silentCompletions.removeValue(forKey: token)?(.spoken) }
+                MainActor.assumeIsolated {
+                    self?.onEnd?()
+                    self?.silentCompletions.removeValue(forKey: token)?(.spoken)
+                }
             }
             return
         }
         let utterance = AVSpeechUtterance(string: text)
+        utterance.rate = utteranceRate(multiplier: rate ?? CompanionPreferences.speechRate)
+        if let chosen = findSpeechVoice(voice) ?? findSpeechVoice(CompanionPreferences.voiceIdentifier) {
+            utterance.voice = chosen
+        }
         completions[ObjectIdentifier(utterance)] = completion
         synthesizer.speak(utterance)
     }
@@ -98,17 +115,40 @@ final class ServiceVoice: NSObject, AVSpeechSynthesizerDelegate {
         completions.removeValue(forKey: identifier)?(outcome)
     }
 
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        let text = utterance.speechString
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.onStart?(text) }
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        willSpeakRangeOfSpeechString characterRange: NSRange,
+        utterance: AVSpeechUtterance
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.onWord?(characterRange) }
+        }
+    }
+
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let identifier = ObjectIdentifier(utterance)
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.finish(identifier, .spoken) }
+            MainActor.assumeIsolated {
+                self?.onEnd?()
+                self?.finish(identifier, .spoken)
+            }
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         let identifier = ObjectIdentifier(utterance)
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.finish(identifier, .interrupted) }
+            MainActor.assumeIsolated {
+                self?.onEnd?()
+                self?.finish(identifier, .interrupted)
+            }
         }
     }
 }

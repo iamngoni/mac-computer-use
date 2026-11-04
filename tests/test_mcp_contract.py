@@ -42,7 +42,16 @@ EXPECTED_TOOLS = [
     "invoke_menu",
     "point_at",
     "annotate",
+    "buddy",
+    "watch_user",
+    "lasso_region",
+    "magnify",
+    "suggest",
+    "job",
     "clear_annotations",
+    "show_visual",
+    "update_visual",
+    "clear_visuals",
     "ask_user",
     "pick_element",
     "wait_for_user",
@@ -67,7 +76,7 @@ class MCPContractTests(unittest.TestCase):
     def test_server_metadata_and_tools(self) -> None:
         initialized = self.client.initialize_response["result"]
         self.assertEqual("mac-computer-use", initialized["serverInfo"]["name"])
-        self.assertEqual("0.9.4", initialized["serverInfo"]["version"])
+        self.assertEqual("0.10.0", initialized["serverInfo"]["version"])
 
         response = self.client.request("tools/list", {})
         names = [tool["name"] for tool in response["result"]["tools"]]
@@ -166,7 +175,7 @@ class MCPContractTests(unittest.TestCase):
         self.assertEqual(
             "com.modestnerd.mac-computer-use", report["bundle"]["identifier"]
         )
-        self.assertEqual("0.9.4", report["bundle"]["version"])
+        self.assertEqual("0.10.0", report["bundle"]["version"])
         self.assertIsInstance(report["overlay"]["launch_requested"], bool)
         self.assertIsInstance(report["overlay"]["state_file_present"], bool)
         self.assertEqual("not_requested", report["overlay"]["status"])

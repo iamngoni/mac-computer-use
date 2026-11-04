@@ -18,6 +18,10 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 - **Show, ask and hand off.** `point_at`, `annotate`, `ask_user`, `pick_element`, `wait_for_user` and `guide` let an agent explain with the cursor, draw hand-drawn marks and captions, ask a question only your physical click can answer, let you point back at the thing you mean, hand you a password or 2FA step, and walk you through a task.
 - **Human brakes.** Esc pauses every agent until you resume from the menu bar, and interrupted actions return `[user_interrupted]` errors. Pressing something like Send, Delete or Buy first shows a 2-second countdown ring you can stop. Agents wait while you are actively using the same app.
 - **Agent preview.** When an agent works in a window you cannot see, a small live preview with its cursor floats in a corner.
+- **Walkthroughs.** `guide` shows a timeline bar with Back, Show again, Skip/Next and Stop; steps can advance on a click, a shortcut, an app switch or Next, and can wait for an app or window to open. Saved tours get the same timeline.
+- **Make it yours.** Setup → Personalize sets the cursor colour, size and trail, and the voice and speed agents speak in; `say` also takes `rate` and `voice` (`voice: "list"` lists them).
+- **Coach mode.** `buddy` keeps the cursor beside yours with reactions and thinking dots, `watch_user` lets the agent see how your "now you try" went, `lasso_region` lets you circle something to ask about it, and `magnify` zooms into tiny UI live. Everything spoken aloud is captioned at the bottom of the screen, word by word.
+- **Live visuals.** `show_visual` lets an agent draw anything a browser engine can (animated diagrams, charts, 3D scenes, spotlights, small interactive widgets) right on your screen, pinned to the real UI it is explaining, and `update_visual` animates it in real time and reads back what you click.
 - **Voice.** `say` speaks to you in the Mac's own on-device voice, and `point_at`, `annotate`, `ask_user`, `wait_for_user` and `guide` take `speak` to read their text aloud (or say something else). Agents' speech queues instead of overlapping, Esc cuts it off, and **Speak Aloud** in the menu bar or setup mutes it; muted calls tell the agent you did not hear them.
 - **Guided tours.** `guide` can save an element-based tour that you replay later from the menu bar, without an agent.
 - **One menu-bar manager.** One status item lists active apps and connected clients, and offers Pause/Resume Agents, Show Agent Preview, Guided Tours, Setup, updates and Quit. Quitting turns automation off until you open the app again.
@@ -58,6 +62,15 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 | `point_at` | Fly the cursor to an element or `x,y` and show a label bubble. Nothing is clicked. |
 | `annotate` | Draw rectangles, ellipses, arrows, paths, pill labels and a caption over an app, pinned to elements. Cleared after `duration_ms` or when the window moves. |
 | `clear_annotations` | Remove everything `annotate` drew. |
+| `buddy` | Give the cursor presence: follow the user's own pointer while teaching, show thinking dots, or react (nod, shake, sparkle, celebrate). Flights leave a soft trail. |
+| `watch_user` | Watch a "now you try" step: a timeline of the user's own clicks (with the element under each), shortcuts, app switches and typed-character counts (never the text), stopping on a click, element, app, shortcut, pause or time limit. |
+| `lasso_region` | The user draws around something; the agent gets the region, the element at its centre and an image of it. |
+| `magnify` | A live circular zoom lens beside a small control or dense text. |
+| `suggest` | Offer an idea on a small top-right card with up to three buttons; only the user's physical click answers it. |
+| `job` | A bottom-left job card for long tasks (title, step, progress) with Pause and Stop that act on that agent alone. |
+| `show_visual` | Render anything live on screen (HTML, CSS, SVG, canvas, WebGL, three.js, d3...) in a transparent panel pinned beside or over an element, over a window, or across the screen. Pass `template` (spotlight, coach, checklist, keycaps, confetti, chart, compare, model3d — a draggable three.js scene with labelled parts or a glTF model) with `data` for a finished visual in one call. The page gets `window.maccu` (data, element targets, events back to the agent) and a built-in design kit. Click-through unless `interactive`; follows its window; hidden from agent screenshots. |
+| `update_visual` | Run JavaScript in a live visual, push new data or targets, replace it, collect the user's events (optionally waiting for one), and get a PNG snapshot of it. |
+| `clear_visuals` | Remove one visual by id, or all of the agent's visuals. Esc and Pause clear them too. |
 | `ask_user` | Ask a question with 2 to 4 answer chips beside the cursor; only the user's physical click answers. |
 | `pick_element` | Capture the user's click(s) and return the app, element and, when it is in the last snapshot, its `element_index`. |
 | `wait_for_user` | Hand a step to the user (password, 2FA, permission dialog) and wait for a click or value change. Secure fields are watched by length only. |

@@ -711,6 +711,15 @@ final class AutomationCursorView: NSView {
     var badgeSymbol: String?
     var shakeStartedAt: CFTimeInterval?
     var countdown: (start: CFTimeInterval, duration: TimeInterval)?
+    /// A short reaction (nod, sparkle, celebrate) and the "thinking" dots.
+    var emote: (kind: CursorEmote, start: CFTimeInterval)?
+    var thinking = false
+    /// The person's chosen cursor colour (nil keeps the art) and size.
+    var tint: NSColor? {
+        didSet { if tint != oldValue { tintedPointer = nil } }
+    }
+    var sizeScale: CGFloat = 1
+    private var tintedPointer: NSImage?
     private let assets: AutomationCursorAssets
 
     init(frame frameRect: NSRect, assets: AutomationCursorAssets) {
@@ -734,23 +743,25 @@ final class AutomationCursorView: NSView {
                 clickStartedAt: clickStartedAt,
                 cancelling: cancelling
             )
+        let reaction = reduceMotion ? CursorEmotePose.rest : cursorEmotePose(emote, now: now)
         let hotspot = CGPoint(
             x: bounds.midX + (reduceMotion ? 0 : cursorShakeOffset(now: now, startedAt: shakeStartedAt)),
-            y: bounds.midY
+            y: bounds.midY + reaction.lift
         )
         // Follow the pointer silhouette with a breathing edge glow. Flight
         // rotation and swell pivot on the hotspot, so the tip stays exact.
         context.saveGState()
         context.translateBy(x: hotspot.x, y: hotspot.y)
         context.rotate(by: rotation)
-        context.scaleBy(x: flightScale, y: flightScale)
+        context.rotate(by: reaction.tilt)
+        context.scaleBy(x: flightScale * reaction.scale * sizeScale, y: flightScale * reaction.scale * sizeScale)
         context.translateBy(x: -bounds.midX, y: -bounds.midY)
         context.setShadow(
             offset: .zero,
             blur: 2 * pulse.scale,
             color: glowColor.withAlphaComponent(pulse.opacity).cgColor
         )
-        assets.pointer.draw(
+        pointerImage.draw(
             in: cursorPointerDrawRect(in: bounds),
             from: .zero,
             operation: .sourceOver,
@@ -762,7 +773,77 @@ final class AutomationCursorView: NSView {
             let remaining = cursorCountdownRemaining(now: now, start: countdown.start, duration: countdown.duration)
             if remaining > 0 { drawCountdown(context, around: hotspot, remaining: remaining) }
         }
-        if let badgeSymbol { drawBadge(badgeSymbol, near: hotspot) }
+        if reaction.sparkle > 0 { drawSparkles(context, around: hotspot, progress: reaction.sparkle, burst: emote?.kind == .celebrate) }
+        if thinking {
+            drawThinking(context, near: hotspot, now: now)
+        } else if let badgeSymbol {
+            drawBadge(badgeSymbol, near: hotspot)
+        }
+    }
+
+    /// The pointer art, recoloured when the person picked a tint. Keeps the
+    /// art's own shading by multiplying the tint over a desaturated copy.
+    private var pointerImage: NSImage {
+        guard let tint else { return assets.pointer }
+        if let tintedPointer { return tintedPointer }
+        let art = assets.pointer
+        let image = NSImage(size: art.size, flipped: false) { rect in
+            art.draw(in: rect)
+            tint.set()
+            rect.fill(using: .sourceAtop)
+            // Bring back a little of the art's highlight and outline.
+            art.draw(in: rect, from: .zero, operation: .softLight, fraction: 0.6)
+            return true
+        }
+        tintedPointer = image
+        return image
+    }
+
+    private func drawSparkles(_ context: CGContext, around center: CGPoint, progress: CGFloat, burst: Bool) {
+        let colors: [NSColor] = burst
+            ? [.systemPurple, .systemTeal, .systemPink, .systemYellow, .systemGreen, .white]
+            : [.white, NSColor(calibratedRed: 0.75, green: 0.68, blue: 1, alpha: 1)]
+        let count = burst ? 10 : 6
+        let eased = 1 - pow(1 - progress, 3)
+        let radius = 10 + eased * (burst ? 26 : 20)
+        let alpha = 1 - progress
+        context.saveGState()
+        for index in 0..<count {
+            let angle = CGFloat(index) / CGFloat(count) * .pi * 2 + 0.4
+            let point = CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+            let size = (burst ? 3.2 : 2.6) * (1 - progress * 0.5)
+            context.setFillColor(colors[index % colors.count].withAlphaComponent(alpha).cgColor)
+            // Four-point star.
+            let star = CGMutablePath()
+            star.move(to: CGPoint(x: point.x, y: point.y + size * 2))
+            star.addLine(to: CGPoint(x: point.x + size * 0.45, y: point.y + size * 0.45))
+            star.addLine(to: CGPoint(x: point.x + size * 2, y: point.y))
+            star.addLine(to: CGPoint(x: point.x + size * 0.45, y: point.y - size * 0.45))
+            star.addLine(to: CGPoint(x: point.x, y: point.y - size * 2))
+            star.addLine(to: CGPoint(x: point.x - size * 0.45, y: point.y - size * 0.45))
+            star.addLine(to: CGPoint(x: point.x - size * 2, y: point.y))
+            star.addLine(to: CGPoint(x: point.x - size * 0.45, y: point.y + size * 0.45))
+            star.closeSubpath()
+            context.addPath(star)
+            context.fillPath()
+        }
+        context.restoreGState()
+    }
+
+    private func drawThinking(_ context: CGContext, near hotspot: CGPoint, now: CFTimeInterval) {
+        let pill = CGRect(x: hotspot.x + 10, y: hotspot.y - 28, width: 26, height: 13)
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: -1), blur: 3, color: NSColor.black.withAlphaComponent(0.25).cgColor)
+        context.setFillColor(NSColor.white.withAlphaComponent(0.96).cgColor)
+        context.addPath(CGPath(roundedRect: pill, cornerWidth: 6.5, cornerHeight: 6.5, transform: nil))
+        context.fillPath()
+        context.restoreGState()
+        for index in 0..<3 {
+            let phase = reduceMotion ? 0.5 : (sin(now * 6 - Double(index) * 0.9) + 1) / 2
+            let center = CGPoint(x: pill.minX + 7 + CGFloat(index) * 6, y: pill.midY + CGFloat(phase) * 1.5)
+            context.setFillColor(accent.withAlphaComponent(0.45 + 0.55 * CGFloat(phase)).cgColor)
+            context.fillEllipse(in: CGRect(x: center.x - 1.7, y: center.y - 1.7, width: 3.4, height: 3.4))
+        }
     }
 
     private func drawCountdown(_ context: CGContext, around center: CGPoint, remaining: CGFloat) {

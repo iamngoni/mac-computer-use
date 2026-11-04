@@ -912,6 +912,13 @@ final class ServiceOverlayPresenter {
         var tag: CursorBubblePanel?
         var countdownEnds: CFTimeInterval = 0
         var visible = false
+        var followUntil: CFTimeInterval = 0
+        /// The last point the worker asked for, so following the person's
+        /// pointer is not undone by unrelated state updates.
+        var requested: CGPoint?
+        var thinkingUntil: CFTimeInterval = 0
+        var emote: (kind: CursorEmote, start: CFTimeInterval)?
+        var trail: [(point: CGPoint, time: CFTimeInterval)] = []
     }
 
     private let assets: AutomationCursorAssets
@@ -919,6 +926,13 @@ final class ServiceOverlayPresenter {
     private let bannerWindow: NSWindow
     private let bannerView: OverlayView
     let annotations: AnnotationOverlay
+    let visuals: VisualStage
+    private let trails: TrailOverlay
+    let captions: CaptionStrip
+    let jobs: JobBoard
+    private var timeline: StepTimeline?
+    private var lenses: [MagnifierLens] = []
+    private var lastTick: CFTimeInterval = 0
     private var cursors: [String: SessionCursor] = [:]
     private var timer: Timer?
     private var pausedBannerUntil: CFTimeInterval = 0
@@ -944,7 +958,19 @@ final class ServiceOverlayPresenter {
         bannerView = OverlayView(frame: CGRect(origin: .zero, size: frame.size))
         bannerWindow.contentView = bannerView
         annotations = AnnotationOverlay(captureVisible: captureVisible)
+        visuals = VisualStage(captureVisible: captureVisible)
+        trails = TrailOverlay(captureVisible: captureVisible)
+        captions = CaptionStrip(captureVisible: captureVisible)
+        jobs = JobBoard(captureVisible: captureVisible)
         annotations.onVisibilityChanged = { [weak self] in
+            guard let self else { return }
+            self.onWindowsChanged?(self.windowIDs)
+        }
+        visuals.onWindowsChanged = { [weak self] in
+            guard let self else { return }
+            self.onWindowsChanged?(self.windowIDs)
+        }
+        jobs.onWindowsChanged = { [weak self] in
             guard let self else { return }
             self.onWindowsChanged?(self.windowIDs)
         }
@@ -966,6 +992,12 @@ final class ServiceOverlayPresenter {
             if let bubble = cursor.bubble { identifiers.append(CGWindowID(bubble.windowNumber)) }
             if let tag = cursor.tag { identifiers.append(CGWindowID(tag.windowNumber)) }
         }
+        identifiers += visuals.windowIDs
+        identifiers.append(trails.windowID)
+        identifiers.append(captions.windowID)
+        identifiers += lenses.map(\.windowID)
+        identifiers += jobs.windowIDs
+        if let timeline { identifiers.append(timeline.windowID) }
         identifiers += extraWindowIDs
         return identifiers.filter { $0 > 0 }
     }
@@ -995,7 +1027,8 @@ final class ServiceOverlayPresenter {
         cursor.state = state
         if let point = state["cursor"] as? [Double], point.count == 2 {
             let target = quartzPointToCocoa(CGPoint(x: point[0], y: point[1]))
-            if cursor.target != target {
+            if cursor.requested != target {
+                cursor.requested = target
                 let pace = CursorPace(rawValue: state["cursor_pace"] as? String ?? "") ?? .act
                 if let from = cursor.displayed, cursor.visible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                     cursor.flight = CursorFlight(from: from, to: target, start: now, pace: pace, multiplier: cursorPaceMultiplier())
@@ -1008,6 +1041,8 @@ final class ServiceOverlayPresenter {
             }
         }
         let controlling = state["controlling"] as? Bool ?? false
+        // Thinking ends the moment the agent acts.
+        if controlling { cursor.thinkingUntil = 0 }
         if controlling || (previous["status"] as? String) != (state["status"] as? String) {
             cursor.lastActivity = now
         }
@@ -1082,6 +1117,69 @@ final class ServiceOverlayPresenter {
         ensureTimer()
     }
 
+    /// Buddy mode: follow the person's pointer, show thinking dots, or react.
+    func buddy(sessionID: String, follow: TimeInterval?, thinking: TimeInterval?, emote: CursorEmote?) {
+        var cursor = cursors[sessionID] ?? makeCursor()
+        let now = CACurrentMediaTime()
+        if let follow { cursor.followUntil = follow > 0 ? now + follow : 0 }
+        if let thinking { cursor.thinkingUntil = thinking > 0 ? now + thinking : 0 }
+        if let emote {
+            cursor.emote = (emote, now)
+            if emote == .shake { cursor.view.shakeStartedAt = now }
+        }
+        if cursor.displayed == nil || !cursor.visible {
+            // Appear beside the person's pointer rather than at a stale spot.
+            let mouse = NSEvent.mouseLocation
+            cursor.displayed = CGPoint(x: mouse.x + buddyFollowOffset.x, y: mouse.y + buddyFollowOffset.y)
+            cursor.target = cursor.displayed
+            cursor.flight = nil
+        }
+        cursor.lastActivity = now
+        let isNew = cursors[sessionID] == nil
+        cursors[sessionID] = cursor
+        if isNew { onWindowsChanged?(windowIDs) }
+        ensureTimer()
+    }
+
+    func magnify(sessionID: String, region: CGRect, zoom: CGFloat, label: String?, duration: TimeInterval) {
+        clearLenses(sessionID: sessionID)
+        let lens = MagnifierLens(owner: sessionID, region: region, zoom: zoom, label: label, captureVisible: captureVisible, duration: duration)
+        lens.onClosed = { [weak self, weak lens] in
+            guard let self else { return }
+            if let lens, lens.isClosed { self.lenses.removeAll { $0 === lens } }
+            self.onWindowsChanged?(self.windowIDs)
+        }
+        lenses.append(lens)
+        onWindowsChanged?(windowIDs)
+    }
+
+    func job(sessionID: String, id: String, job: JobState) {
+        let cursor = cursors[sessionID]
+        let color = cursor.map { cursorIdentityPalette[$0.colorIndex] } ?? accent
+        jobs.update(sessionID: sessionID, agent: cursor?.name ?? "", color: color, id: id, job: job)
+    }
+
+    func showTimeline(sessionID: String, steps: [String], current: Int, manual: Bool, onAction: @escaping (String) -> Void) {
+        if let existing = timeline, existing.sessionID != sessionID { existing.hide() ; timeline = nil }
+        let bar = timeline ?? StepTimeline(sessionID: sessionID, captureVisible: captureVisible, onAction: onAction)
+        let isNew = timeline == nil
+        timeline = bar
+        bar.show(steps: steps, current: current, manual: manual)
+        if isNew { onWindowsChanged?(windowIDs) }
+    }
+
+    func hideTimeline(sessionID: String?) {
+        guard let timeline, sessionID == nil || timeline.sessionID == sessionID else { return }
+        timeline.hide()
+        self.timeline = nil
+        onWindowsChanged?(windowIDs)
+    }
+
+    func clearLenses(sessionID: String?) {
+        for lens in lenses where sessionID == nil || lens.owner == sessionID { lens.close() }
+        lenses.removeAll { sessionID == nil || $0.owner == sessionID }
+    }
+
     func shake(sessionID: String) {
         guard let cursor = cursors[sessionID] else { return }
         cursor.view.shakeStartedAt = CACurrentMediaTime()
@@ -1089,6 +1187,11 @@ final class ServiceOverlayPresenter {
     }
 
     func removeSession(_ sessionID: String) {
+        _ = visuals.clear(owner: sessionID)
+        trails.clear(sessionID)
+        clearLenses(sessionID: sessionID)
+        jobs.remove(sessionID: sessionID)
+        hideTimeline(sessionID: sessionID)
         guard let cursor = cursors.removeValue(forKey: sessionID) else { return }
         cursor.panel.orderOut(nil)
         cursor.panel.close()
@@ -1101,13 +1204,26 @@ final class ServiceOverlayPresenter {
     func removeAll() {
         for id in Array(cursors.keys) { removeSession(id) }
         annotations.clear()
+        _ = visuals.clear(owner: nil)
         bannerWindow.orderOut(nil)
+        trails.clearAll()
+        clearLenses(sessionID: nil)
+        hideTimeline(sessionID: nil)
         timer?.invalidate()
         timer = nil
     }
 
     func setPaused(_ paused: Bool) {
         self.paused = paused
+        // Esc and Pause stop everything agents put on screen, visuals included.
+        if paused {
+            _ = visuals.clear(owner: nil)
+            clearLenses(sessionID: nil)
+            for id in cursors.keys {
+                cursors[id]?.followUntil = 0
+                cursors[id]?.thinkingUntil = 0
+            }
+        }
         pausedBannerUntil = paused ? CACurrentMediaTime() + 4 : 0
         ensureTimer()
     }
@@ -1125,6 +1241,7 @@ final class ServiceOverlayPresenter {
         bannerWindow.setFrame(frame, display: bannerWindow.isVisible)
         bannerView.frame = CGRect(origin: .zero, size: frame.size)
         annotations.screensChanged()
+        trails.screensChanged()
     }
 
     func ensureTimer() {
@@ -1139,16 +1256,28 @@ final class ServiceOverlayPresenter {
 
     private func tick() {
         let now = CACurrentMediaTime()
+        let dt = lastTick > 0 ? min(now - lastTick, 0.1) : 1.0 / 60
+        lastTick = now
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         var needsFrames = false
         var bannerSession: SessionCursor?
         var windowsChanged = false
 
+        let tint = cursorTintColor(CompanionPreferences.cursorTint)
+        let sizeScale = CGFloat(CompanionPreferences.cursorScale)
+        let trailStyle = CompanionPreferences.trailStyle
         for (id, var cursor) in cursors {
+            cursor.view.tint = tint
+            cursor.view.sizeScale = sizeScale
             let controlling = cursor.state["controlling"] as? Bool ?? false
             let lingerUntil = cursor.state["lingerUntil"] as? Double ?? 0
             let bubbleShowing = cursor.bubble.map { $0.isVisible && ($0.hideAt.map { now < $0 } ?? true) } ?? false
+            let following = now < cursor.followUntil && !controlling && cursor.flight == nil
+            let thinking = now < cursor.thinkingUntil
+            let emoting = cursor.emote.map { now - $0.start < cursorEmoteDuration($0.kind) } ?? false
+            if !emoting { cursor.emote = nil }
             let active = controlling || now < lingerUntil || bubbleShowing || now < cursor.countdownEnds
+                || following || thinking || emoting
             // The service's own cursors (demo, tours) never claim control.
             let isLocal = cursor.state["local"] as? Bool ?? false
             if active {
@@ -1166,9 +1295,34 @@ final class ServiceOverlayPresenter {
                 cursor.view.flightScale = reduceMotion ? 1 : sample.scale
                 if sample.finished { cursor.flight = nil }
                 needsFrames = true
+            } else if following, let displayed = cursor.displayed {
+                let mouse = NSEvent.mouseLocation
+                let goal = CGPoint(x: mouse.x + buddyFollowOffset.x, y: mouse.y + buddyFollowOffset.y)
+                cursor.displayed = reduceMotion ? goal : buddyFollowStep(from: displayed, to: goal, dt: dt)
+                cursor.target = cursor.displayed
+                // Lean toward the direction of travel, like a pet trailing along.
+                let lean = reduceMotion ? 0 : max(min((goal.x - displayed.x) * -0.004, 0.25), -0.25)
+                cursor.view.rotation += (lean - cursor.view.rotation) * 0.2
+                needsFrames = true
             } else if cursor.displayed == nil {
                 cursor.displayed = cursor.target
             }
+            if !following, cursor.flight == nil, cursor.view.rotation != 0 {
+                cursor.view.rotation = abs(cursor.view.rotation) < 0.01 ? 0 : cursor.view.rotation * 0.7
+                needsFrames = true
+            }
+            cursor.view.emote = cursor.emote
+            cursor.view.thinking = thinking
+            if emoting || thinking { needsFrames = true }
+            // Flights leave a short fading trail.
+            if let displayed = cursor.displayed, cursor.visible, !reduceMotion, trailStyle != "off", cursor.flight != nil || following {
+                if cursor.trail.last.map({ hypot($0.point.x - displayed.x, $0.point.y - displayed.y) > 1.5 }) ?? true {
+                    cursor.trail.append((displayed, now))
+                }
+            }
+            cursor.trail.removeAll { now - $0.time > 0.42 }
+            trails.update(id, points: cursor.trail, now: now, color: cursor.view.glowColor == .white ? (tint ?? accent) : cursor.view.glowColor, subtle: trailStyle == "subtle")
+            if !cursor.trail.isEmpty { needsFrames = true }
             if cursor.pendingClickAt != nil, cursor.flight == nil {
                 cursor.view.clickStartedAt = now
                 cursor.pendingClickAt = nil
@@ -1271,5 +1425,85 @@ final class ServiceOverlayPresenter {
             timer?.invalidate()
             timer = nil
         }
+    }
+}
+
+
+// MARK: - Flight trails
+
+/// A click-through layer that draws each cursor's short fading trail.
+@MainActor
+final class TrailOverlay {
+    private let window: NSWindow
+    private let root = CALayer()
+    private var layers: [String: CAShapeLayer] = [:]
+
+    init(captureVisible: Bool) {
+        let frame = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+        window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        window.sharingType = captureVisible ? .readOnly : .none
+        let view = NSView(frame: CGRect(origin: .zero, size: frame.size))
+        view.wantsLayer = true
+        view.layer = root
+        window.contentView = view
+    }
+
+    var windowID: CGWindowID { CGWindowID(window.windowNumber) }
+
+    func screensChanged() {
+        let frame = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+        window.setFrame(frame, display: false)
+        root.frame = CGRect(origin: .zero, size: frame.size)
+    }
+
+    func update(_ id: String, points: [(point: CGPoint, time: CFTimeInterval)], now: CFTimeInterval, color: NSColor, subtle: Bool = false) {
+        guard points.count >= 2 else {
+            layers[id]?.path = nil
+            return
+        }
+        let layer = layers[id] ?? {
+            let layer = CAShapeLayer()
+            layer.fillColor = nil
+            layer.lineCap = .round
+            layer.lineJoin = .round
+            layer.lineWidth = 4.5
+            layer.shadowOpacity = 0.9
+            layer.shadowRadius = 7
+            layer.shadowOffset = .zero
+            root.addSublayer(layer)
+            layers[id] = layer
+            return layer
+        }()
+        let origin = window.frame.origin
+        let path = CGMutablePath()
+        path.addLines(between: points.map { CGPoint(x: $0.point.x - origin.x, y: $0.point.y - origin.y) })
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.path = path
+        layer.strokeColor = color.withAlphaComponent(subtle ? 0.4 : 0.85).cgColor
+        layer.lineWidth = subtle ? 2.5 : 4.5
+        layer.shadowOpacity = subtle ? 0 : 0.9
+        layer.shadowColor = color.cgColor
+        let age = now - (points.first?.time ?? now)
+        layer.opacity = Float(max(0.35, 1 - age / 0.6))
+        CATransaction.commit()
+        if !window.isVisible { window.orderFrontRegardless() }
+    }
+
+    func clear(_ id: String) {
+        layers.removeValue(forKey: id)?.removeFromSuperlayer()
+        if layers.isEmpty { window.orderOut(nil) }
+    }
+
+    func clearAll() {
+        for id in Array(layers.keys) { clear(id) }
+        window.orderOut(nil)
     }
 }

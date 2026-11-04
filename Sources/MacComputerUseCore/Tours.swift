@@ -134,6 +134,52 @@ func findTourElement(_ locator: TourLocator, pid: pid_t, limit: Int = 4000) -> A
 
 // MARK: - guide (worker tool)
 
+/// How a walkthrough step advances.
+enum GuideAdvance: Equatable {
+    case click                 // the person clicks the step's target
+    case shortcut(String)      // canonical, e.g. cmd+s
+    case app(String)           // the person switches to this app
+    case next                  // the person presses Next on the timeline
+}
+
+/// What a step waits for before it shows: an app running (and a window
+/// whose title contains some text).
+struct GuideWait: Equatable {
+    var app: String
+    var window: String?
+}
+
+/// Parses a step's advance_on; nil with a message on bad input.
+func guideAdvance(_ raw: [String: Any], hasTarget: Bool) -> Result<GuideAdvance, VisualArgumentError> {
+    switch raw["advance_on"] as? String ?? (hasTarget ? "click" : "next") {
+    case "click":
+        return hasTarget ? .success(.click) : .failure(VisualArgumentError(message: "advance_on click needs element_index or x, y"))
+    case "shortcut":
+        guard let spec = raw["shortcut"] as? String, let shortcut = normalizedShortcutSpec(spec) else {
+            return .failure(VisualArgumentError(message: "advance_on shortcut needs shortcut, like cmd+s"))
+        }
+        return .success(.shortcut(shortcut))
+    case "app":
+        guard let app = (raw["target_app"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty else {
+            return .failure(VisualArgumentError(message: "advance_on app needs target_app"))
+        }
+        return .success(.app(app))
+    case "next":
+        return .success(.next)
+    default:
+        return .failure(VisualArgumentError(message: "advance_on must be click, shortcut, app or next"))
+    }
+}
+
+/// True once the app is running and, if asked, has a window with that title.
+func guideWaitSatisfied(_ wait: GuideWait) -> Bool {
+    guard let app = NSWorkspace.shared.runningApplications.first(where: {
+        $0.localizedName?.caseInsensitiveCompare(wait.app) == .orderedSame || $0.bundleIdentifier == wait.app
+    }) else { return false }
+    guard let window = wait.window?.lowercased(), !window.isEmpty else { return true }
+    return windowCandidates(forPid: app.processIdentifier).contains { $0.title?.lowercased().contains(window) == true }
+}
+
 func toolGuide(_ args: [String: Any]) -> [String: Any] {
     guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("guide") }
     guard let pid = pidFor(args) else { return unresolvedAppError(args) }
@@ -149,9 +195,11 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
     struct PreparedStep {
         let instruction: String
         let element: AXUIElement?
-        let point: CGPoint
+        let point: CGPoint?
         let annotations: [[String: Any]]
         let speech: String?
+        let advance: GuideAdvance
+        let wait: GuideWait?
     }
     // speak on the guide reads every step; a step's own speak overrides it.
     let speakAll = strictJSONBoolean(args["speak"]) == true
@@ -163,10 +211,25 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
         }
         var stepArgs = raw
         stepArgs["app"] = args["app"]
-        let target: InteractionTarget
-        switch resolveInteractionTarget(stepArgs, tool: "guide step \(offset + 1)") {
-        case .resolved(let resolved): target = resolved
-        case .failed(let error): return error
+        let hasTarget = raw["element_index"] != nil || raw["x"] != nil
+        var target: InteractionTarget?
+        if hasTarget {
+            switch resolveInteractionTarget(stepArgs, tool: "guide step \(offset + 1)") {
+            case .resolved(let resolved): target = resolved
+            case .failed(let error): return error
+            }
+        }
+        let advance: GuideAdvance
+        switch guideAdvance(raw, hasTarget: hasTarget) {
+        case .success(let value): advance = value
+        case .failure(let error): return toolText("guide step \(offset + 1): \(error.message).", isError: true)
+        }
+        var wait: GuideWait?
+        if let rawWait = raw["wait_for"] as? [String: Any] {
+            guard let app = (rawWait["app"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty else {
+                return toolText("guide step \(offset + 1): wait_for needs app.", isError: true)
+            }
+            wait = GuideWait(app: app, window: rawWait["window"] as? String)
         }
         var annotations: [[String: Any]] = []
         for item in raw["annotate"] as? [[String: Any]] ?? [] {
@@ -184,17 +247,19 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
         }
         steps.append(PreparedStep(
             instruction: shortInstruction,
-            element: target.element,
-            point: target.point,
+            element: target?.element,
+            point: target?.point,
             annotations: annotations,
-            speech: stepSpeech
+            speech: stepSpeech,
+            advance: advance,
+            wait: wait
         ))
     }
 
     var savedNote = ""
     if let saveAs, !saveAs.isEmpty {
-        guard steps.allSatisfy({ $0.element != nil }) else {
-            return toolText("save_as needs every step to use element_index, because saved tours find elements, not pixels.", isError: true)
+        guard steps.allSatisfy({ $0.element != nil && $0.advance == .click && $0.wait == nil }) else {
+            return toolText("save_as needs every step to use element_index and advance on click, because saved tours find elements, not pixels.", isError: true)
         }
         let windowTitle = windowCandidates(forPid: pid).first { $0.id == context.windowId }?.title
         let tour = TourFile(
@@ -219,25 +284,84 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
     defer {
         if !completed { OverlayController.shared.sendToService(["type": "bubble_clear"]) }
         OverlayController.shared.sendToService(["type": "annotations_clear"])
+        OverlayController.shared.sendToService(["type": "timeline_clear"])
     }
-    for (offset, step) in steps.enumerated() {
-        let frame = step.element.flatMap(axFrame)
-        if step.element != nil, frame == nil {
-            return toolText("Completed \(offset) of \(steps.count) steps. Step \(offset + 1)'s element disappeared; call get_app_state and continue from there.", isError: true)
+    let titles = steps.map(\.instruction)
+    var index = 0
+    var skipped: [Int] = []
+    var lastTouch = Date()
+    let keepAlive: () -> Void = {
+        if Date().timeIntervalSince(lastTouch) > 2 {
+            OverlayController.shared.touchCursor()
+            lastTouch = Date()
         }
-        let point = frame.map { CGPoint(x: $0.midX, y: $0.midY) } ?? step.point
-        guard snapshotWindowIsVisible(at: point, context: context) else {
-            return toolText("Completed \(offset) of \(steps.count) steps. " + (toolResultText(hiddenWindowResult("guide", context: context)) ?? ""), isError: true)
+    }
+    while index < steps.count {
+        let step = steps[index]
+        OverlayController.shared.sendToService([
+            "type": "timeline", "steps": titles, "current": index, "manual": step.advance == .next,
+        ])
+        OverlayController.shared.sendToService(["type": "annotations_clear"])
+
+        // Wait for an app or window first, if the step needs one.
+        if let wait = step.wait, !guideWaitSatisfied(wait) {
+            OverlayController.shared.sendToService([
+                "type": "bubble",
+                "text": "Step \(index + 1) of \(steps.count): \(step.instruction)\nWaiting for \(wait.window.map { "“\($0)” in " } ?? "")\(wait.app)…",
+                "style": "handoff", "hold_ms": 0,
+            ])
+            _ = speakAloud(step.speech)
+            let waited = WorkerSession.shared.interact("wait_next", [:], timeout: timeout, poll: {
+                keepAlive()
+                return guideWaitSatisfied(wait) ? ["outcome": "ready"] : nil
+            })
+            switch waited {
+            case .polled: break
+            case .response(let response) where response["outcome"] as? String == "nav":
+                switch response["action"] as? String {
+                case "back": index = max(index - 1, 0); continue
+                case "skip": skipped.append(index + 1); index += 1; continue
+                default: continue // replay: wait again
+                }
+            case .cancelled:
+                return toolText("[user_dismissed] The user stopped the walkthrough at step \(index + 1) of \(steps.count).\(savedNote)", isError: true)
+            case .timedOut:
+                return toolText("[timeout] \(wait.app) did not appear within \(Int(timeout)) s (step \(index + 1) of \(steps.count)).\(savedNote)", isError: true)
+            default:
+                return serviceRequiredResult("guide")
+            }
         }
-        OverlayController.shared.moveCursorQuartz(point, pace: .teach)
+
+        // Point at the target, if the step has one.
+        var rect: CGRect?
+        if step.element != nil || step.point != nil {
+            let frame = step.element.flatMap(axFrame)
+            if step.element != nil, frame == nil {
+                return toolText("Completed \(index) of \(steps.count) steps. Step \(index + 1)'s element disappeared; call get_app_state and continue from there.", isError: true)
+            }
+            let point = frame.map { CGPoint(x: $0.midX, y: $0.midY) } ?? step.point!
+            guard snapshotWindowIsVisible(at: point, context: context) else {
+                return toolText("Completed \(index) of \(steps.count) steps. " + (toolResultText(hiddenWindowResult("guide", context: context)) ?? ""), isError: true)
+            }
+            OverlayController.shared.moveCursorQuartz(point, pace: .teach)
+            rect = frame ?? CGRect(x: point.x - 12, y: point.y - 12, width: 24, height: 24)
+        } else {
+            OverlayController.shared.touchCursor()
+        }
+        let hint: String
+        switch step.advance {
+        case .click: hint = ""
+        case .shortcut(let keys): hint = "\nPress \(keys)"
+        case .app(let app): hint = "\nSwitch to \(app)"
+        case .next: hint = "\nPress Next when you're ready"
+        }
         OverlayController.shared.sendToService([
             "type": "bubble",
-            "text": "Step \(offset + 1) of \(steps.count): \(step.instruction)",
+            "text": "Step \(index + 1) of \(steps.count): \(step.instruction)\(hint)",
             "style": "handoff",
             "hold_ms": 0,
         ])
-        OverlayController.shared.sendToService(["type": "annotations_clear"])
-        _ = speakAloud(step.speech)
+        if step.wait == nil || guideWaitSatisfied(step.wait!) { _ = speakAloud(step.speech) }
         if !step.annotations.isEmpty {
             let bounds = context.windowBounds
             OverlayController.shared.sendToService([
@@ -248,32 +372,53 @@ func toolGuide(_ args: [String: Any]) -> [String: Any] {
                 "window_bounds": [Double(bounds.minX), Double(bounds.minY), Double(bounds.width), Double(bounds.height)],
             ])
         }
-        let rect = frame ?? CGRect(x: point.x - 12, y: point.y - 12, width: 24, height: 24)
-        var lastTouch = Date()
-        let outcome = WorkerSession.shared.interact(
-            "wait_click",
-            ["rect": [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]],
-            timeout: timeout,
-            poll: {
-                if Date().timeIntervalSince(lastTouch) > 2 {
-                    OverlayController.shared.touchCursor()
-                    lastTouch = Date()
-                }
-                return nil
-            }
-        )
+
+        let outcome: WorkerSession.InteractionOutcome
+        switch step.advance {
+        case .click:
+            let r = rect!
+            outcome = WorkerSession.shared.interact(
+                "wait_click",
+                ["rect": [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)], "navigable": true],
+                timeout: timeout,
+                poll: { keepAlive(); return nil }
+            )
+        case .shortcut(let keys):
+            outcome = WorkerSession.shared.interact("watch", ["shortcut": keys, "duration_ms": Int(timeout * 1000), "navigable": true], timeout: timeout + 2, poll: { keepAlive(); return nil })
+        case .app(let app):
+            outcome = WorkerSession.shared.interact("watch", ["app": app, "duration_ms": Int(timeout * 1000), "navigable": true], timeout: timeout + 2, poll: { keepAlive(); return nil })
+        case .next:
+            outcome = WorkerSession.shared.interact("wait_next", [:], timeout: timeout, poll: { keepAlive(); return nil })
+        }
         switch outcome {
-        case .response(let response) where response["outcome"] as? String == "clicked":
-            continue
+        case .response(let response):
+            switch response["outcome"] as? String {
+            case "clicked", "matched":
+                index += 1
+            case "nav":
+                switch response["action"] as? String {
+                case "back": index = max(index - 1, 0)
+                case "skip":
+                    if step.advance != .next { skipped.append(index + 1) }
+                    index += 1
+                default: break // replay re-shows the same step
+                }
+            case "time_up":
+                return toolText("[timeout] The user did not finish step \(index + 1) of \(steps.count) within \(Int(timeout)) s.\(savedNote)", isError: true)
+            default:
+                return serviceRequiredResult("guide")
+            }
         case .cancelled:
-            return toolText("[user_dismissed] The user stopped the tour after \(offset) of \(steps.count) steps.\(savedNote)", isError: true)
+            return toolText("[user_dismissed] The user stopped the walkthrough after \(index) of \(steps.count) steps.\(savedNote)", isError: true)
         case .timedOut:
-            return toolText("[timeout] The user did not finish step \(offset + 1) of \(steps.count) within \(Int(timeout)) s.\(savedNote)", isError: true)
+            return toolText("[timeout] The user did not finish step \(index + 1) of \(steps.count) within \(Int(timeout)) s.\(savedNote)", isError: true)
         default:
             return serviceRequiredResult("guide")
         }
     }
     completed = true
     OverlayController.shared.sendToService(["type": "bubble", "text": "All done!", "style": "done", "hold_ms": 1500])
-    return toolText("The user completed all \(steps.count) steps.\(savedNote) Re-read state before continuing.")
+    OverlayController.shared.sendToService(["type": "buddy", "emote": "celebrate"])
+    let skippedNote = skipped.isEmpty ? "" : " They skipped step\(skipped.count > 1 ? "s" : "") \(Array(Set(skipped)).sorted().map(String.init).joined(separator: ", "))."
+    return toolText("The user completed the walkthrough (\(steps.count) steps).\(skippedNote)\(savedNote) Re-read state before continuing.")
 }

@@ -150,12 +150,23 @@ func speakAloud(_ text: String?) -> String {
 
 func toolSay(_ args: [String: Any]) -> [String: Any] {
     guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("say") }
+    if (args["voice"] as? String)?.lowercased() == "list" {
+        let voices = availableSpeechVoices()
+        let lines = voices.map { "\($0.name) (\($0.language)) — \($0.id)" }
+        return toolText("\(voices.count) voices installed. Pass a name, language (en-GB) or identifier as voice:\n" + lines.joined(separator: "\n"))
+    }
     guard let text = trimmedText(args, "text", limit: 400) else { return toolText("say needs text.", isError: true) }
     guard WorkerSession.shared.isVoiceEnabled else { return voiceMutedResult }
+    if let voice = args["voice"] as? String, findSpeechVoice(voice) == nil {
+        return toolText("No installed voice matches “\(voice)”. Call say with voice: \"list\" to see them.", isError: true)
+    }
     let wait = strictJSONBoolean(args["wait"]) ?? true
+    var request: [String: Any] = ["text": text, "wait": wait]
+    if let rate = strictJSONDouble(args["rate"]) { request["rate"] = clampedSpeechRate(rate) }
+    if let voice = args["voice"] as? String { request["voice"] = voice }
     // Speech runs at roughly 15 characters a second; leave room for slow voices.
     let timeout = 10 + Double(text.count) / 6
-    switch WorkerSession.shared.interact("say", ["text": text, "wait": wait], timeout: timeout) {
+    switch WorkerSession.shared.interact("say", request, timeout: timeout / min(max(strictJSONDouble(args["rate"]) ?? 1, 0.5), 1.5)) {
     case .response(let response):
         switch response["outcome"] as? String {
         case "muted": return voiceMutedResult
@@ -565,4 +576,503 @@ func yieldToUser(targetPID: pid_t, appName: String?) -> [String: Any]? {
         usleep(100_000)
     }
     return toolText("[user_busy] The user kept using \(name) for 20 s, so nothing was done. Wait, or ask them before retrying.", isError: true)
+}
+
+// MARK: - Live visuals
+
+private func visualID(_ args: [String: Any]) -> String? {
+    guard let raw = args["id"] else { return "main" }
+    guard let id = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !id.isEmpty, id.count <= 64 else { return nil }
+    return id
+}
+
+private func encodeQuartzRect(_ rect: CGRect) -> [Double] {
+    [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
+}
+
+/// Resolves an element index or an [x, y, width, height] rect (screenshot
+/// pixels with an app snapshot, screen points without) to Quartz.
+private func visualRect(_ value: Any?, context: SnapshotContext?, pid: pid_t?) -> CGRect? {
+    if let array = value as? [Any] {
+        guard array.count == 4 else { return nil }
+        let numbers = array.compactMap(strictJSONDouble)
+        guard numbers.count == 4, numbers[2] > 0, numbers[3] > 0 else { return nil }
+        guard let context else { return CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]) }
+        let origin = pixelToScreen(CGPoint(x: numbers[0], y: numbers[1]), context)
+        return CGRect(x: origin.x, y: origin.y, width: numbers[2] / context.pixelScale, height: numbers[3] / context.pixelScale)
+    }
+    guard let pid, let parsed = parseElementIndex(value), let index = parsed,
+          let element = registryElement(index, forPid: pid) else { return nil }
+    return axFrame(element)
+}
+
+struct VisualArgumentError: Error { let message: String }
+
+private func visualTargets(_ value: Any?, context: SnapshotContext?, pid: pid_t?) -> Result<[String: [Double]], VisualArgumentError> {
+    guard let value else { return .success([:]) }
+    guard let map = value as? [String: Any], map.count <= 48 else { return .failure(VisualArgumentError(message: "targets must be an object of at most 48 entries")) }
+    var output: [String: [Double]] = [:]
+    for (name, raw) in map {
+        guard let rect = visualRect(raw, context: context, pid: pid) else {
+            return .failure(VisualArgumentError(message: "target “\(name)” needs an element_index from the current snapshot or [x, y, width, height]"))
+        }
+        output[name] = encodeQuartzRect(rect)
+    }
+    return .success(output)
+}
+
+private func visualSummary(_ response: [String: Any]) -> String {
+    var lines: [String] = []
+    if let events = response["events"] as? [Any], !events.isEmpty,
+       let text = visualResultText(events) {
+        lines.append("Events from the visual: \(text)")
+    }
+    if let result = response["result"] as? String { lines.append("Script returned: \(result)") }
+    if let error = response["script_error"] as? String { lines.append("Script error: \(error)") }
+    if let errors = response["errors"] as? [String], !errors.isEmpty {
+        lines.append("Page errors:\n- " + errors.joined(separator: "\n- "))
+    }
+    return lines.isEmpty ? "" : "\n" + lines.joined(separator: "\n")
+}
+
+func toolShowVisual(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("show_visual") }
+    guard let id = visualID(args) else { return toolText("show_visual id must be 1 to 64 characters.", isError: true) }
+    var template: VisualTemplate?
+    if let name = args["template"] as? String {
+        guard let found = visualTemplates[name] else {
+            return toolText("Unknown template “\(name)”. Templates: \(visualTemplates.keys.sorted().joined(separator: ", ")).", isError: true)
+        }
+        template = found
+    }
+    let rawHTML = (args["html"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    guard rawHTML != nil || template != nil else {
+        return toolText("show_visual needs html (a page or fragment: HTML, CSS, SVG, canvas, WebGL, scripts) or a template.", isError: true)
+    }
+    let html = template.map { visualTemplatePage($0, extra: rawHTML) } ?? rawHTML ?? ""
+    guard html.utf8.count <= VisualStage.maxHTMLBytes else {
+        return toolText("show_visual html is limited to \(VisualStage.maxHTMLBytes / 1_000_000) MB; load big libraries from a CDN with <script src>.", isError: true)
+    }
+    var context: SnapshotContext?
+    var pid: pid_t?
+    if let spec = args["app"] as? String, !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        guard let resolved = pidFor(args) else { return unresolvedAppError(args) }
+        guard let snapshot = authorizedSnapshot(forPid: resolved) else {
+            return toolText("show_visual over an app needs a fresh get_app_state snapshot for it first.", isError: true)
+        }
+        pid = resolved
+        context = snapshot
+    }
+    var anchor: CGRect?
+    if args["element_index"] != nil {
+        guard let rect = visualRect(args["element_index"], context: context, pid: pid) else {
+            return toolText("element_index is not from this app's current snapshot.", isError: true)
+        }
+        anchor = rect
+    } else if let x = args["x"], let y = args["y"] {
+        let width = args["width"] ?? NSNumber(value: 1), height = args["height"] ?? NSNumber(value: 1)
+        guard let rect = visualRect([x, y, width, height], context: context, pid: pid) else {
+            return toolText("x, y, width, height must be numbers; width and height above 0.", isError: true)
+        }
+        anchor = rect
+    }
+    let targets: [String: [Double]]
+    switch visualTargets(args["targets"], context: context, pid: pid) {
+    case .success(let value): targets = value
+    case .failure(let error): return toolText("show_visual: \(error.message).", isError: true)
+    }
+    var allTargets = targets
+    if let anchor { allTargets["anchor"] = encodeQuartzRect(anchor) }
+    if let context { allTargets["window"] = encodeQuartzRect(context.windowBounds) }
+
+    if let template, template.needsAnchor, anchor == nil {
+        return toolText("The \(template.name) template needs an anchor: element_index or x, y, width, height.", isError: true)
+    }
+    let defaultPlacement: VisualPlacement = template?.placement ?? (anchor != nil ? .beside : .center)
+    let placementName = args["placement"] as? String
+    guard let placement = placementName.map({ VisualPlacement(rawValue: $0) }) ?? defaultPlacement else {
+        return toolText("placement must be beside, over, center, window, screen or at.", isError: true)
+    }
+    if placement == .window, context == nil {
+        return toolText("placement window needs app (and its get_app_state snapshot).", isError: true)
+    }
+    if let anchor, let context, !snapshotWindowIsVisible(at: CGPoint(x: anchor.midX, y: anchor.midY), context: context) {
+        return hiddenWindowResult("show_visual", context: context)
+    }
+    let templateSize = template.map { $0.size == .zero ? CGSize(width: 380, height: 240) : $0.size }
+    let width = min(max(strictJSONDouble(args["panel_width"]) ?? Double(templateSize?.width ?? 380), 40), 4000)
+    let height = min(max(strictJSONDouble(args["panel_height"]) ?? Double(templateSize?.height ?? 240), 30), 3000)
+    let durationValue = strictJSONInteger(args["duration_ms"]) ?? 30000
+    let duration = durationValue <= 0 ? 0 : min(max(durationValue, 1000), 1_800_000)
+    let interactive = strictJSONBoolean(args["interactive"]) ?? template?.interactive ?? false
+    let backdrop = args["backdrop"] as? String ?? "none"
+    guard ["none", "glass", "dark"].contains(backdrop) else {
+        return toolText("backdrop must be none, glass or dark.", isError: true)
+    }
+    var message: [String: Any] = [
+        "visual_id": id,
+        "html": html,
+        "placement": placement.rawValue,
+        "size": [width, height],
+        "targets": allTargets,
+        "interactive": interactive,
+        "backdrop": backdrop,
+        "follow_window": strictJSONBoolean(args["follow_window"]) ?? true,
+        "duration_ms": duration,
+    ]
+    if let anchor { message["anchor"] = encodeQuartzRect(anchor) }
+    if let context {
+        message["window_bounds"] = encodeQuartzRect(context.windowBounds)
+        message["window_id"] = Int(context.windowId)
+    }
+    if let data = args["data"] { message["data"] = data }
+    OverlayController.shared.touchCursor()
+    switch WorkerSession.shared.interact("visual_show", message, timeout: 15) {
+    case .response(let response):
+        guard response["outcome"] as? String == "shown" else {
+            return toolText("show_visual failed: \(response["message"] as? String ?? "the overlay refused it").", isError: true)
+        }
+        let frame = (response["frame"] as? [Double]).map { $0.map { String(Int($0)) }.joined(separator: ", ") } ?? "?"
+        let life = duration == 0 ? "until cleared" : "for \(duration / 1000) s"
+        let spoken = speakAloud(spokenText(args, default: nil))
+        return toolText(
+            "Showing visual “\(id)” at [\(frame)] (screen points, side \(response["side"] as? String ?? "none")) \(life)\(interactive ? ", interactive" : ", click-through"). It is hidden from your screenshots; use update_visual with snapshot: true to see it.\(visualSummary(response))\(spoken)"
+        )
+    case .timedOut:
+        return toolText("[timeout] The overlay did not confirm the visual.", isError: true)
+    case .cancelled:
+        return toolText("[cancelled] The user stopped the agent.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("show_visual")
+    }
+}
+
+func toolUpdateVisual(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("update_visual") }
+    guard let id = visualID(args) else { return toolText("update_visual id must be 1 to 64 characters.", isError: true) }
+    var message: [String: Any] = ["visual_id": id]
+    if let script = args["script"] as? String, !script.isEmpty {
+        guard script.utf8.count <= VisualStage.maxHTMLBytes else { return toolText("script is too large.", isError: true) }
+        message["script"] = script
+    }
+    if let html = args["html"] as? String, !html.isEmpty {
+        guard html.utf8.count <= VisualStage.maxHTMLBytes else { return toolText("html is too large.", isError: true) }
+        message["html"] = html
+    }
+    if args.keys.contains("data") { message["data"] = args["data"] ?? NSNull() }
+    if args["targets"] != nil {
+        var context: SnapshotContext?
+        let pid = pidFor(args)
+        if let pid { context = authorizedSnapshot(forPid: pid) }
+        switch visualTargets(args["targets"], context: context, pid: pid) {
+        case .success(let value): message["targets"] = value
+        case .failure(let error): return toolText("update_visual: \(error.message).", isError: true)
+        }
+    }
+    let snapshot = strictJSONBoolean(args["snapshot"]) ?? false
+    message["snapshot"] = snapshot
+    let wait = min(max(strictJSONInteger(args["wait_event_ms"]) ?? 0, 0), 600_000)
+    message["wait_event_ms"] = wait
+    switch WorkerSession.shared.interact("visual_update", message, timeout: Double(wait) / 1000 + 20) {
+    case .response(let response):
+        if response["outcome"] as? String == "missing" {
+            return toolText("No visual “\(id)” is showing. It may have expired, been closed, or been cleared by the user.", isError: true)
+        }
+        let summary = visualSummary(response)
+        var result = toolText("Updated visual “\(id)”.\(summary.isEmpty ? (wait > 0 ? "\nNo events arrived." : "") : summary)")
+        if let png = response["png"] as? String, var content = result["content"] as? [[String: Any]] {
+            content.append(["type": "image", "data": png, "mimeType": "image/png"])
+            result["content"] = content
+        }
+        return result
+    case .timedOut:
+        return toolText("[timeout] The visual did not answer.", isError: true)
+    case .cancelled:
+        return toolText("[cancelled] The user stopped the agent.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("update_visual")
+    }
+}
+
+func toolClearVisuals(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("clear_visuals") }
+    var message: [String: Any] = [:]
+    if let id = args["id"] as? String { message["visual_id"] = id }
+    switch WorkerSession.shared.interact("visual_clear", message, timeout: 5) {
+    case .response(let response):
+        return toolText("Cleared \((response["count"] as? NSNumber)?.intValue ?? 0) visual(s).")
+    default:
+        return serviceRequiredResult("clear_visuals")
+    }
+}
+
+
+// MARK: - buddy
+
+func toolBuddy(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("buddy") }
+    var message: [String: Any] = ["type": "buddy"]
+    var parts: [String] = []
+    if let follow = strictJSONBoolean(args["follow"]) {
+        let ms = follow ? clampedMilliseconds(args, "follow_ms", default: 120_000, range: 1000...1_800_000) : 0
+        message["follow_ms"] = ms
+        parts.append(follow ? "following the user's pointer for \(ms / 1000) s (your actions still fly the cursor to their targets)" : "stopped following")
+    }
+    if let thinking = strictJSONBoolean(args["thinking"]) {
+        let ms = thinking ? clampedMilliseconds(args, "thinking_ms", default: 30_000, range: 500...600_000) : 0
+        message["thinking_ms"] = ms
+        parts.append(thinking ? "showing thinking dots" : "cleared thinking dots")
+    }
+    if let emote = args["emote"] as? String {
+        guard CursorEmote(rawValue: emote) != nil else {
+            return toolText("emote must be one of: \(CursorEmote.allCases.map(\.rawValue).joined(separator: ", ")).", isError: true)
+        }
+        message["emote"] = emote
+        parts.append("\(emote)")
+    }
+    guard !parts.isEmpty else { return toolText("buddy needs follow, thinking or emote.", isError: true) }
+    OverlayController.shared.sendToService(message)
+    let spoken = speakAloud(spokenText(args, default: nil))
+    return toolText("Cursor: " + parts.joined(separator: "; ") + ".\(spoken)")
+}
+
+// MARK: - watch_user
+
+/// Resolves an element index or [x, y, width, height] (screenshot pixels) in
+/// the given app to a Quartz rect, for watch and magnify targets.
+private func appRegion(_ args: [String: Any], tool: String) -> Result<(rect: CGRect, context: SnapshotContext?), VisualArgumentError> {
+    var context: SnapshotContext?
+    var pid: pid_t?
+    if let spec = args["app"] as? String, !spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        guard let resolved = pidFor(args) else { return .failure(VisualArgumentError(message: "unknown app “\(spec)”")) }
+        guard let snapshot = authorizedSnapshot(forPid: resolved) else {
+            return .failure(VisualArgumentError(message: "\(tool) needs a fresh get_app_state snapshot of \(spec) first"))
+        }
+        pid = resolved
+        context = snapshot
+    }
+    if args["element_index"] != nil {
+        guard let rect = visualRect(args["element_index"], context: context, pid: pid) else {
+            return .failure(VisualArgumentError(message: "element_index is not from this app's current snapshot"))
+        }
+        return .success((rect, context))
+    }
+    if let x = args["x"], let y = args["y"] {
+        guard let rect = visualRect([x, y, args["width"] ?? NSNumber(value: 40), args["height"] ?? NSNumber(value: 40)], context: context, pid: pid) else {
+            return .failure(VisualArgumentError(message: "x, y, width, height must be numbers"))
+        }
+        return .success((rect, context))
+    }
+    return .failure(VisualArgumentError(message: "\(tool) needs element_index or x, y (with app: screenshot pixels; without: screen points)"))
+}
+
+func toolWatchUser(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("watch_user") }
+    var message: [String: Any] = [:]
+    let until = args["until"] as? String ?? "idle"
+    switch until {
+    case "click":
+        message["any_click"] = true
+    case "click_element":
+        switch appRegion(args, tool: "watch_user until click_element") {
+        case .success(let region): message["click_in"] = [Double(region.rect.minX), Double(region.rect.minY), Double(region.rect.width), Double(region.rect.height)]
+        case .failure(let error): return toolText("watch_user: \(error.message).", isError: true)
+        }
+    case "app":
+        guard let name = (args["target_app"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return toolText("watch_user until app needs target_app.", isError: true)
+        }
+        message["app"] = name
+    case "shortcut":
+        guard let spec = args["shortcut"] as? String, let shortcut = normalizedShortcutSpec(spec) else {
+            return toolText("watch_user until shortcut needs shortcut, for example cmd+s.", isError: true)
+        }
+        message["shortcut"] = shortcut
+    case "idle", "duration":
+        break
+    default:
+        return toolText("until must be click, click_element, app, shortcut, idle or duration.", isError: true)
+    }
+    if until == "idle" || args["idle_ms"] != nil {
+        message["idle_ms"] = clampedMilliseconds(args, "idle_ms", default: 4000, range: 500...120_000)
+    }
+    let duration = clampedMilliseconds(args, "duration_ms", default: 60_000, range: 2000...600_000)
+    message["duration_ms"] = duration
+    OverlayController.shared.touchCursor()
+    if let prompt = trimmedText(args, "prompt", limit: 160) {
+        OverlayController.shared.sendToService(["type": "bubble", "text": prompt, "style": "handoff", "hold_ms": min(duration, 15000)])
+    }
+    _ = speakAloud(spokenText(args, default: trimmedText(args, "prompt", limit: 160)))
+    switch WorkerSession.shared.interact("watch", message, timeout: Double(duration) / 1000 + 5) {
+    case .response(let response):
+        let events = response["events"] as? [[String: Any]] ?? []
+        let outcome = response["outcome"] as? String ?? "?"
+        let headline: String
+        switch outcome {
+        case "matched": headline = "The user did it (\(until))"
+        case "idle": headline = "The user paused for \((message["idle_ms"] as? Int ?? 0) / 1000) s"
+        case "time_up": headline = "Watch time ran out without the expected action"
+        case "cancelled_watch": headline = "The watch was cancelled"
+        default: headline = "Watch ended (\(outcome))"
+        }
+        var lines: [String] = []
+        for event in events {
+            let t = String(format: "+%.1fs", (event["t"] as? Double) ?? 0)
+            switch event["kind"] as? String {
+            case "click":
+                let point = quartzPoint(event["point"]) ?? .zero
+                let owner = pid_t((event["owner"] as? NSNumber)?.int32Value ?? 0)
+                let button = event["button"] as? String == "right" ? "right-clicked" : ((event["count"] as? Int ?? 1) > 1 ? "double-clicked" : "clicked")
+                let described = describePick(point, owner: owner, number: 0).replacingOccurrences(of: "0. ", with: "", options: .anchored)
+                lines.append("\(t) \(button) \(described) at (\(Int(point.x)), \(Int(point.y))) screen points")
+            case "key":
+                lines.append("\(t) pressed \(event["shortcut"] as? String ?? "?")")
+            case "typing":
+                lines.append("\(t) typed \(event["count"] as? Int ?? 0) character(s) (content not recorded)")
+            case "app":
+                lines.append("\(t) switched to \(event["app"] as? String ?? "?")")
+            default:
+                break
+            }
+        }
+        let body = lines.isEmpty ? "No input from the user." : lines.joined(separator: "\n")
+        let elapsed = String(format: "%.1f", response["elapsed"] as? Double ?? 0)
+        return toolText("\(headline) after \(elapsed) s.\n\(body)")
+    case .cancelled:
+        return toolText("[user_dismissed] The watch was cancelled.", isError: true)
+    case .timedOut:
+        return toolText("[timeout] The watch did not finish.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("watch_user")
+    }
+}
+
+// MARK: - lasso_region
+
+func toolLassoRegion(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("lasso_region") }
+    let prompt = trimmedText(args, "prompt", limit: 160) ?? "Circle what you mean"
+    let timeout = Double(clampedMilliseconds(args, "timeout_s", default: 120, range: 5...600))
+    _ = speakAloud(spokenText(args, default: prompt))
+    switch WorkerSession.shared.interact("lasso", ["prompt": prompt], timeout: timeout) {
+    case .response(let response):
+        let points = (response["points"] as? [Any] ?? []).compactMap(quartzPoint)
+        guard !points.isEmpty else { return toolText("The user finished without drawing.") }
+        let bounds = points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }.insetBy(dx: -6, dy: -6)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let owner = windowOwnerUnder(center) ?? 0
+        let what = describePick(center, owner: owner, number: 1).replacingOccurrences(of: "1. ", with: "", options: .anchored)
+        let closed = hypot(points[0].x - points[points.count - 1].x, points[0].y - points[points.count - 1].y) < max(bounds.width, bounds.height) * 0.35
+        var text = """
+        The user \(closed ? "circled" : "drew a stroke over") a region at [\(Int(bounds.minX)), \(Int(bounds.minY)), \(Int(bounds.width)), \(Int(bounds.height))] (screen points).
+        At its centre: \(what).
+        """
+        var content: [[String: Any]] = []
+        if let crop = captureScreenRegion(bounds.insetBy(dx: -16, dy: -16)), let png = boundedPNG(crop) {
+            text += "\nAttached: what is inside the region (\(png.width)×\(png.height) px)."
+            content.append(["type": "image", "data": png.data.base64EncodedString(), "mimeType": "image/png"])
+        }
+        return ["content": [["type": "text", "text": text]] + content, "isError": false]
+    case .cancelled:
+        return toolText("[user_dismissed] The user cancelled drawing.", isError: true)
+    case .timedOut:
+        return toolText("[timeout] The user did not draw within \(Int(timeout)) s.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("lasso_region")
+    }
+}
+
+/// Captures a Quartz screen rect from the display containing its centre.
+func captureScreenRegion(_ rect: CGRect) -> CGImage? {
+    let center = CGPoint(x: rect.midX, y: rect.midY)
+    guard let display = activeDisplayIDs().first(where: { CGDisplayBounds($0).contains(center) }),
+          let image = captureDesktopDisplay(display) else { return nil }
+    let bounds = CGDisplayBounds(display)
+    let scale = CGFloat(image.width) / bounds.width
+    let local = rect.intersection(bounds).offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+    guard !local.isNull, local.width >= 1, local.height >= 1 else { return nil }
+    return image.cropping(to: CGRect(x: local.minX * scale, y: local.minY * scale, width: local.width * scale, height: local.height * scale).integral)
+}
+
+// MARK: - magnify
+
+func toolMagnify(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("magnify") }
+    if strictJSONBoolean(args["clear"]) == true {
+        OverlayController.shared.sendToService(["type": "magnify_clear"])
+        return toolText("Closed the magnifier.")
+    }
+    let region: (rect: CGRect, context: SnapshotContext?)
+    switch appRegion(args, tool: "magnify") {
+    case .success(let value): region = value
+    case .failure(let error): return toolText("magnify: \(error.message).", isError: true)
+    }
+    if let context = region.context,
+       !snapshotWindowIsVisible(at: CGPoint(x: region.rect.midX, y: region.rect.midY), context: context) {
+        return hiddenWindowResult("magnify", context: context)
+    }
+    let zoom = min(max(strictJSONDouble(args["zoom"]) ?? 3, 1.5), 8)
+    let duration = clampedMilliseconds(args, "duration_ms", default: 8000, range: 1000...120_000)
+    var message: [String: Any] = [
+        "type": "magnify",
+        "rect": [Double(region.rect.minX), Double(region.rect.minY), Double(region.rect.width), Double(region.rect.height)],
+        "zoom": zoom,
+        "duration_ms": duration,
+    ]
+    if let label = trimmedText(args, "label", limit: 80) { message["label"] = label }
+    OverlayController.shared.sendToService(message)
+    let spoken = speakAloud(spokenText(args, default: trimmedText(args, "label", limit: 80)))
+    return toolText("Magnifying [\(Int(region.rect.minX)), \(Int(region.rect.minY)), \(Int(region.rect.width)), \(Int(region.rect.height))] at \(String(format: "%.1f", zoom))× for \(duration / 1000) s, live.\(spoken)")
+}
+
+// MARK: - suggest
+
+func toolSuggest(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("suggest") }
+    guard let title = trimmedText(args, "title", limit: 90) else { return toolText("suggest needs a title.", isError: true) }
+    let actions = (args["actions"] as? [Any] ?? ["Do it", "Not now"]).compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard (1...3).contains(actions.count), Set(actions).count == actions.count else {
+        return toolText("suggest needs 1 to 3 distinct actions.", isError: true)
+    }
+    var message: [String: Any] = ["title": title, "actions": actions]
+    if let body = trimmedText(args, "body", limit: 240) { message["body"] = body }
+    if let symbol = args["symbol"] as? String, NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil {
+        message["symbol"] = symbol
+    }
+    let timeout = Double(clampedMilliseconds(args, "timeout_s", default: 120, range: 5...900))
+    _ = speakAloud(spokenText(args, default: title))
+    switch WorkerSession.shared.interact("suggest", message, timeout: timeout) {
+    case .response(let response):
+        let choice = response["choice"] as? String ?? "?"
+        let index = (response["index"] as? NSNumber)?.intValue ?? -1
+        return toolText("The user chose “\(choice)”\(index == 0 ? " (your primary action)" : "").")
+    case .cancelled:
+        return toolText("[user_dismissed] The user dismissed the suggestion.", isError: true)
+    case .timedOut:
+        return toolText("[timeout] The user did not answer within \(Int(timeout)) s. Treat it as not now.", isError: true)
+    case .unavailable, .polled:
+        return serviceRequiredResult("suggest")
+    }
+}
+
+// MARK: - job
+
+func toolJob(_ args: [String: Any]) -> [String: Any] {
+    guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("job") }
+    let id = (args["id"] as? String).map { String($0.prefix(64)) } ?? "main"
+    if strictJSONBoolean(args["clear"]) == true {
+        OverlayController.shared.sendToService(["type": "job", "job_id": id, "clear": true])
+        return toolText("Removed job card “\(id)”.")
+    }
+    guard let title = trimmedText(args, "title", limit: 80) else { return toolText("job needs a title.", isError: true) }
+    let state = args["state"] as? String ?? "running"
+    guard ["running", "done", "failed"].contains(state) else { return toolText("state must be running, done or failed.", isError: true) }
+    var message: [String: Any] = ["type": "job", "job_id": id, "title": title, "state": state]
+    if let step = trimmedText(args, "step", limit: 120) { message["step"] = step }
+    if let progress = strictJSONDouble(args["progress"]) { message["progress"] = min(max(progress, 0), 1) }
+    OverlayController.shared.sendToService(message)
+    let percent = (message["progress"] as? Double).map { " \(Int($0 * 100))%" } ?? ""
+    return toolText("Job card “\(title)”: \(state)\(percent). The user can Pause or Stop you from it; finished cards fade after 6 s.")
 }
