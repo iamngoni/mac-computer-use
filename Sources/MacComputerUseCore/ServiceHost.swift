@@ -213,6 +213,8 @@ final class ActiveInteraction {
     var windowIDs: () -> [CGWindowID]
     var dismiss: () -> Void
     var timer: Timer?
+    /// Set for walkthrough waits: the timeline's Back, Replay and Skip land here.
+    var navigate: ((String) -> Void)?
 
     init(sessionID: String, requestID: Int, windowIDs: @escaping () -> [CGWindowID], dismiss: @escaping () -> Void) {
         self.sessionID = sessionID
@@ -276,13 +278,16 @@ final class TourPlayback {
     func cancel() {
         guard !finished else { return }
         watch?.stop()
+        presenter?.hideTimeline(sessionID: Self.sessionID)
         presenter?.showBubble(sessionID: Self.sessionID, text: "Tour stopped", style: .tag, holdSeconds: 1)
         finish()
     }
 
     private func finish() {
         finished = true
+        watch?.stop()
         watch = nil
+        presenter?.hideTimeline(sessionID: Self.sessionID)
         onFinish()
     }
 
@@ -290,6 +295,7 @@ final class TourPlayback {
         guard !finished, let presenter else { return }
         guard index < tour.steps.count else {
             presenter.showBubble(sessionID: Self.sessionID, text: "All done!", style: .done, holdSeconds: 1.5)
+            presenter.buddy(sessionID: Self.sessionID, follow: nil, thinking: nil, emote: .celebrate)
             finish()
             return
         }
@@ -304,6 +310,19 @@ final class TourPlayback {
                 MainActor.assumeIsolated { self.showStep(step, frame: frame) }
             }
         }
+    }
+
+    private func navigate(_ action: String) {
+        guard !finished else { return }
+        watch?.stop()
+        watch = nil
+        switch action {
+        case "stop": cancel(); return
+        case "back": index = max(index - 1, 0)
+        case "skip": index += 1
+        default: break
+        }
+        runStep()
     }
 
     private func showStep(_ step: TourStep, frame: CGRect?) {
@@ -321,6 +340,9 @@ final class TourPlayback {
             return
         }
         let point = CGPoint(x: frame.midX, y: frame.midY)
+        presenter.showTimeline(sessionID: Self.sessionID, steps: tour.steps.map(\.instruction), current: index, manual: false) { [weak self] action in
+            self?.navigate(action)
+        }
         presenter.moveLocalCursor(sessionID: Self.sessionID, name: tour.title, to: point, pace: .teach, linger: 0.5)
         presenter.showBubble(
             sessionID: Self.sessionID,
@@ -397,6 +419,18 @@ public final class ServiceHost {
             self?.broadcast(["type": "overlay_windows", "ids": identifiers.map { Int($0) }])
         }
         agentCam?.onWindowsChanged = { [weak self] in self?.refreshExtraWindows() }
+        presenter?.jobs.onPause = { [weak self] sessionID, paused in
+            self?.sessions[sessionID]?.control.send(["type": "pause", "paused": paused])
+        }
+        presenter?.jobs.onStop = { [weak self] sessionID in
+            self?.sessions[sessionID]?.control.send(["type": "cancel"])
+            self?.presenter?.jobs.remove(sessionID: sessionID)
+        }
+        if let captions = presenter?.captions {
+            voice.onStart = { text in if CaptionsPreference.isEnabled { captions.start(text) } }
+            voice.onWord = { range in captions.word(range) }
+            voice.onEnd = { captions.end() }
+        }
     }
 
     // MARK: Lifecycle
@@ -816,6 +850,7 @@ public final class ServiceHost {
         }
         presenter?.removeSession(sessionID)
         presenter?.annotations.clear(owner: sessionID)
+        _ = presenter?.visuals.clear(owner: sessionID)
         agentCam?.sessionEnded(sessionID)
         log("session \(sessionID) ended for \(session.client.displayName)")
         notifyChange()
@@ -854,10 +889,55 @@ public final class ServiceHost {
                 style: BubbleStyle(rawValue: message["style"] as? String ?? "") ?? .teach,
                 holdSeconds: hold > 0 ? hold / 1000 : nil
             )
+        case "buddy":
+            func seconds(_ key: String) -> TimeInterval? { (message[key] as? NSNumber).map { $0.doubleValue / 1000 } }
+            presenter?.buddy(
+                sessionID: sessionID,
+                follow: seconds("follow_ms"),
+                thinking: seconds("thinking_ms"),
+                emote: (message["emote"] as? String).flatMap(CursorEmote.init(rawValue:))
+            )
+        case "magnify":
+            if let region = quartzRect(message["rect"]) {
+                presenter?.magnify(
+                    sessionID: sessionID,
+                    region: region,
+                    zoom: CGFloat((message["zoom"] as? NSNumber)?.doubleValue ?? 3),
+                    label: message["label"] as? String,
+                    duration: ((message["duration_ms"] as? NSNumber)?.doubleValue ?? 8000) / 1000
+                )
+            }
+        case "job":
+            let id = String((message["job_id"] as? String ?? "main").prefix(64))
+            if message["clear"] as? Bool == true {
+                presenter?.jobs.remove(sessionID: sessionID, id: id)
+            } else {
+                presenter?.job(sessionID: sessionID, id: id, job: JobState(
+                    title: String((message["title"] as? String ?? "Working").prefix(80)),
+                    step: (message["step"] as? String).map { String($0.prefix(120)) },
+                    progress: (message["progress"] as? NSNumber)?.doubleValue,
+                    state: message["state"] as? String ?? "running"
+                ))
+            }
+        case "timeline":
+            presenter?.showTimeline(
+                sessionID: sessionID,
+                steps: (message["steps"] as? [String] ?? []).map { String($0.prefix(120)) },
+                current: (message["current"] as? NSNumber)?.intValue ?? 0,
+                manual: message["manual"] as? Bool ?? false
+            ) { [weak self] action in self?.timelineAction(action, sessionID: sessionID) }
+        case "timeline_clear":
+            presenter?.hideTimeline(sessionID: sessionID)
+        case "magnify_clear":
+            presenter?.clearLenses(sessionID: sessionID)
         case "bubble_clear":
             presenter?.clearBubble(sessionID: sessionID)
         case "speak":
-            voice.speak(String((message["text"] as? String ?? "").prefix(400)))
+            voice.speak(
+                String((message["text"] as? String ?? "").prefix(400)),
+                rate: (message["rate"] as? NSNumber)?.doubleValue,
+                voice: message["voice"] as? String
+            )
         case "annotate":
             presenter?.annotations.show(
                 owner: sessionID,
@@ -890,6 +970,78 @@ public final class ServiceHost {
         }
     }
 
+    /// A timeline button: steer the step the agent is waiting on, or stop.
+    private func timelineAction(_ action: String, sessionID: String) {
+        guard let waiting = interactions.last(where: { $0.sessionID == sessionID && $0.navigate != nil }) else { return }
+        if action == "stop" {
+            finishInteraction(waiting, respond: ["outcome": "cancelled"])
+        } else {
+            waiting.navigate?(action)
+        }
+    }
+
+    // MARK: Visuals
+
+    /// Live visuals answer asynchronously once the page has loaded or the
+    /// script has run, so they reply directly rather than as interactions.
+    private func handleVisualRequest(_ kind: String, _ message: [String: Any], session: ServiceSession, requestID: Int) {
+        let reply: ([String: Any]) -> Void = { payload in
+            var response = payload
+            response["type"] = "response"
+            response["id"] = requestID
+            session.control.send(response)
+        }
+        guard let stage = presenter?.visuals else {
+            reply(["outcome": "invalid", "message": "the overlay is not running"])
+            return
+        }
+        let id = String((message["visual_id"] as? String ?? "main").prefix(64))
+        func rects(_ value: Any?) -> [String: CGRect] {
+            (value as? [String: Any] ?? [:]).compactMapValues(quartzRect)
+        }
+        switch kind {
+        case "visual_show":
+            let size = message["size"] as? [Double] ?? [380, 240]
+            let request = VisualStage.ShowRequest(
+                owner: session.id,
+                agentName: session.client.displayName,
+                id: id,
+                html: message["html"] as? String ?? "",
+                placement: VisualPlacement(rawValue: message["placement"] as? String ?? "") ?? .center,
+                anchor: quartzRect(message["anchor"]),
+                window: quartzRect(message["window_bounds"]),
+                windowID: (message["window_id"] as? NSNumber).map { CGWindowID($0.uint32Value) },
+                size: CGSize(width: size.first ?? 380, height: size.count > 1 ? size[1] : 240),
+                targets: rects(message["targets"]),
+                data: message["data"],
+                interactive: message["interactive"] as? Bool ?? false,
+                backdrop: message["backdrop"] as? String ?? "none",
+                follow: message["follow_window"] as? Bool ?? true,
+                duration: (message["duration_ms"] as? NSNumber).flatMap { $0.doubleValue > 0 ? $0.doubleValue / 1000 : nil },
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+            stage.show(request, completion: reply)
+        case "visual_update":
+            let request = VisualStage.UpdateRequest(
+                owner: session.id,
+                id: id,
+                script: message["script"] as? String,
+                html: message["html"] as? String,
+                data: message["data"],
+                hasData: message.keys.contains("data"),
+                targets: message["targets"] == nil ? nil : rects(message["targets"]),
+                snapshot: message["snapshot"] as? Bool ?? false,
+                waitEvent: ((message["wait_event_ms"] as? NSNumber)?.doubleValue ?? 0) / 1000
+            )
+            stage.update(request, completion: reply)
+        case "visual_clear":
+            let cleared = stage.clear(owner: session.id, id: message["visual_id"] as? String)
+            reply(["outcome": "cleared", "count": cleared])
+        default:
+            reply(["outcome": "invalid"])
+        }
+    }
+
     // MARK: Interactions
 
     private func startInteraction(_ message: [String: Any], for session: ServiceSession) {
@@ -897,8 +1049,16 @@ public final class ServiceHost {
         let sessionID = session.id
         let timeout = ((message["timeout_ms"] as? NSNumber)?.doubleValue ?? 120_000) / 1000
         let capture = environment["MACCU_CAPTURE_OVERLAY"] == "1"
+        if let kind = message["kind"] as? String, kind.hasPrefix("visual_") {
+            handleVisualRequest(kind, message, session: session, requestID: requestID)
+            return
+        }
         var interaction: ActiveInteraction?
-        if message["kind"] as? String != "wait_click" { presenter?.clearBubble(sessionID: sessionID) }
+        // Walkthrough waits keep the step's bubble on screen.
+        if message["kind"] as? String != "wait_click", message["kind"] as? String != "wait_next",
+           message["navigable"] as? Bool != true {
+            presenter?.clearBubble(sessionID: sessionID)
+        }
         func respond(_ payload: [String: Any]) {
             guard let current = interaction else { return }
             finishInteraction(current, respond: payload)
@@ -957,7 +1117,7 @@ public final class ServiceHost {
                 return
             }
             guard message["wait"] as? Bool ?? true else {
-                voice.speak(text)
+                voice.speak(text, rate: (message["rate"] as? NSNumber)?.doubleValue, voice: message["voice"] as? String)
                 session.control.send(["type": "response", "id": requestID, "outcome": "started"])
                 return
             }
@@ -967,13 +1127,77 @@ public final class ServiceHost {
                 windowIDs: { [] },
                 dismiss: { [weak voice] in voice?.stopAll() }
             )
-            voice.speak(text) { outcome in
+            voice.speak(text, rate: (message["rate"] as? NSNumber)?.doubleValue, voice: message["voice"] as? String) { outcome in
                 switch outcome {
                 case .spoken: respond(["outcome": "spoken"])
                 case .muted: respond(["outcome": "muted"])
                 case .interrupted: respond(["outcome": "cancelled"])
                 }
             }
+        case "watch":
+            var stop = WatchStop()
+            stop.anyClick = message["any_click"] as? Bool ?? false
+            stop.clickIn = quartzRect(message["click_in"])
+            stop.app = message["app"] as? String
+            stop.shortcut = message["shortcut"] as? String
+            stop.idle = (message["idle_ms"] as? NSNumber).map { $0.doubleValue / 1000 }
+            let watch = UserWatch(stop: stop) { result in respond(result) }
+            let limit = ((message["duration_ms"] as? NSNumber)?.doubleValue ?? 60_000) / 1000
+            let deadline = Timer.scheduledTimer(withTimeInterval: max(limit, 1), repeats: false) { [weak watch] _ in
+                MainActor.assumeIsolated { watch?.finish("time_up") }
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { [] },
+                dismiss: { deadline.invalidate(); watch.finish("cancelled_watch") }
+            )
+            if message["navigable"] as? Bool == true {
+                interaction?.navigate = { action in respond(["outcome": "nav", "action": action]) }
+            }
+        case "wait_next":
+            // A manual walkthrough step: the person presses Next on the timeline.
+            interaction = ActiveInteraction(sessionID: sessionID, requestID: requestID, windowIDs: { [] }, dismiss: {})
+            interaction?.navigate = { action in respond(["outcome": "nav", "action": action]) }
+        case "suggest":
+            let actions = (message["actions"] as? [String] ?? ["Do it", "Not now"]).prefix(3).map { String($0.prefix(24)) }
+            let card = SuggestionCard(
+                agent: session.client.displayName,
+                title: String((message["title"] as? String ?? "").prefix(90)),
+                body: (message["body"] as? String).map { String($0.prefix(240)) },
+                symbol: message["symbol"] as? String,
+                actions: Array(actions),
+                captureVisible: capture
+            ) { index in
+                if let index {
+                    respond(["outcome": "chosen", "index": index, "choice": actions[index]])
+                } else {
+                    respond(["outcome": "cancelled"])
+                }
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { [card.windowID] },
+                dismiss: { card.finish(nil) }
+            )
+        case "lasso":
+            let lasso = LassoSession(
+                prompt: String((message["prompt"] as? String ?? "Circle what you mean").prefix(160)),
+                captureVisible: capture
+            ) { points in
+                guard let points else {
+                    respond(["outcome": "cancelled"])
+                    return
+                }
+                respond(["outcome": "drawn", "points": simplifiedPath(points).map { [Double($0.x), Double($0.y)] }])
+            }
+            interaction = ActiveInteraction(
+                sessionID: sessionID,
+                requestID: requestID,
+                windowIDs: { lasso.windowIDs },
+                dismiss: { lasso.finish(nil) }
+            )
         case "wait_click":
             guard let rect = quartzRect(message["rect"]) else {
                 session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
@@ -996,6 +1220,9 @@ public final class ServiceHost {
                 windowIDs: { [] },
                 dismiss: { watch.stop() }
             )
+            if message["navigable"] as? Bool == true {
+                interaction?.navigate = { action in respond(["outcome": "nav", "action": action]) }
+            }
         default:
             session.control.send(["type": "response", "id": requestID, "outcome": "invalid"])
             return
@@ -1025,6 +1252,12 @@ public final class ServiceHost {
             broadcast(["type": "voice", "enabled": voice.canSpeak])
             notifyChange()
         }
+    }
+
+    /// Speaks a short sample in the person's chosen voice and speed.
+    public func previewVoice() {
+        voice.stopAll()
+        voice.speak("Hi! This is how I'll sound when I talk you through things.")
     }
 
     public var agentPreviewEnabled: Bool {

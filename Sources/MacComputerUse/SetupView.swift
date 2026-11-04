@@ -21,6 +21,13 @@ final class SetupModel: ObservableObject {
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var agentPreview = true
     @Published var speakAloud = true
+    @Published var cursorTint = CompanionPreferences.cursorTint
+    @Published var cursorScale = CompanionPreferences.cursorScale
+    @Published var trailStyle = CompanionPreferences.trailStyle
+    @Published var voiceID = CompanionPreferences.voiceIdentifier ?? ""
+    @Published var speechRate = CompanionPreferences.speechRate
+    @Published var showPersonalize = false
+    let voices = availableSpeechVoices()
     @Published var copiedClient: SupportedMCPClient?
     @Published var errorMessage: String?
 
@@ -189,6 +196,36 @@ final class SetupModel: ObservableObject {
         host?.agentPreviewEnabled = enabled
         agentPreview = enabled
     }
+
+    func setCursorTint(_ tint: String) {
+        CompanionPreferences.cursorTint = tint
+        cursorTint = tint
+        runCursorDemo()
+    }
+
+    func setCursorScale(_ scale: Double) {
+        CompanionPreferences.cursorScale = scale
+        cursorScale = CompanionPreferences.cursorScale
+    }
+
+    func setTrailStyle(_ style: String) {
+        CompanionPreferences.trailStyle = style
+        trailStyle = style
+        runCursorDemo()
+    }
+
+    func setVoice(_ id: String) {
+        CompanionPreferences.voiceIdentifier = id.isEmpty ? nil : id
+        voiceID = id
+        host?.previewVoice()
+    }
+
+    func setSpeechRate(_ rate: Double) {
+        CompanionPreferences.speechRate = rate
+        speechRate = CompanionPreferences.speechRate
+    }
+
+    func previewVoice() { host?.previewVoice() }
 
     func setSpeakAloud(_ enabled: Bool) {
         host?.voiceEnabled = enabled
@@ -692,12 +729,85 @@ struct SetupChecklist: View {
                     .help("Let agents talk to you in the Mac's voice")
                     .fixedSize()
                 Spacer(minLength: 0)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { model.showPersonalize.toggle() }
+                } label: {
+                    Label("Personalize", systemImage: model.showPersonalize ? "chevron.up" : "paintpalette")
+                }
+                .buttonStyle(.borderless)
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .font(.system(size: 13))
             .padding(.top, 14)
+            if model.showPersonalize {
+                PersonalizePanel(model: model)
+                    .padding(.top, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+    }
+}
+
+/// Cursor colour, size and trail, and the voice agents speak in.
+struct PersonalizePanel: View {
+    @ObservedObject var model: SetupModel
+
+    private func swatch(_ name: String) -> Color {
+        Color(nsColor: cursorTintColor(name) ?? NSColor(calibratedRed: 0.2, green: 0.5, blue: 1, alpha: 1))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Text("Cursor").frame(width: 64, alignment: .leading).foregroundStyle(.secondary)
+                ForEach(CompanionPreferences.tints, id: \.self) { name in
+                    Button { model.setCursorTint(name) } label: {
+                        Circle().fill(swatch(name)).frame(width: 18, height: 18)
+                            .overlay(Circle().stroke(Color.primary.opacity(model.cursorTint == name ? 0.9 : 0), lineWidth: 2).padding(-3))
+                    }
+                    .buttonStyle(.plain)
+                    .help(name.capitalized)
+                }
+                Spacer(minLength: 8)
+                Text("Size").foregroundStyle(.secondary)
+                Slider(value: Binding(get: { model.cursorScale }, set: { model.setCursorScale($0) }), in: 0.8...1.6)
+                    .frame(width: 110)
+            }
+            HStack(spacing: 10) {
+                Text("Trail").frame(width: 64, alignment: .leading).foregroundStyle(.secondary)
+                Picker("", selection: Binding(get: { model.trailStyle }, set: { model.setTrailStyle($0) })) {
+                    Text("Glow").tag("glow")
+                    Text("Subtle").tag("subtle")
+                    Text("Off").tag("off")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 200)
+                Spacer()
+            }
+            HStack(spacing: 10) {
+                Text("Voice").frame(width: 64, alignment: .leading).foregroundStyle(.secondary)
+                Picker("", selection: Binding(get: { model.voiceID }, set: { model.setVoice($0) })) {
+                    Text("System default").tag("")
+                    ForEach(model.voices, id: \.id) { voice in
+                        Text("\(voice.name) · \(voice.language)").tag(voice.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+                Text("Speed").foregroundStyle(.secondary)
+                Slider(value: Binding(get: { model.speechRate }, set: { model.setSpeechRate($0) }), in: 0.5...1.5, step: 0.1) { editing in
+                    if !editing { model.previewVoice() }
+                }
+                .frame(width: 90)
+                Text(String(format: "%.1f×", model.speechRate)).monospacedDigit().foregroundStyle(.secondary).frame(width: 34)
+            }
+        }
+        .font(.system(size: 13))
+        .controlSize(.small)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
     }
 }
 

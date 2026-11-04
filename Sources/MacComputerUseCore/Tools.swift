@@ -784,10 +784,183 @@ func toolDefinitions() -> [ToolDefinition] {
             handler: toolAnnotate
         ),
         ToolDefinition(
+            name: "buddy",
+            description: "Give your cursor presence. follow: true makes it ride beside the user's own pointer while you talk them through something (your actions still fly it to their targets). thinking: true shows animated dots while you work something out. emote reacts once: nod (yes / got it), shake (no / not quite), sparkle (look here / nice), celebrate (done!). Flights leave a soft trail automatically.",
+            inputSchema: obj(
+                [
+                    "follow": ["type": "boolean"],
+                    "follow_ms": ["type": "integer", "minimum": 1000, "maximum": 1800000, "description": "Default 120000."],
+                    "thinking": ["type": "boolean"],
+                    "thinking_ms": ["type": "integer", "minimum": 500, "maximum": 600000, "description": "Auto-clear after this long. Default 30000."],
+                    "emote": ["type": "string", "enum": ["nod", "shake", "sparkle", "celebrate"]],
+                    "speak": speakOption,
+                ],
+                []
+            ),
+            handler: toolBuddy
+        ),
+        ToolDefinition(
+            name: "watch_user",
+            description: "Watch what the user does during a \"now you try\" step, then coach them: returns a timeline of their own clicks (with the element and app under each), keyboard shortcuts, app switches and how many characters they typed (never what). Your own input is ignored. Stops when the user clicks anything (until: click), clicks a given element (click_element), switches to target_app (app), presses a shortcut (shortcut), pauses for idle_ms (idle, default), or when duration_ms runs out (duration). Optional prompt shows as a bubble.",
+            inputSchema: obj(
+                [
+                    "until": ["type": "string", "enum": ["click", "click_element", "app", "shortcut", "idle", "duration"]],
+                    "app": app,
+                    "element_index": ["type": ["string", "integer"], "description": "For click_element."],
+                    "x": number, "y": number, "width": number, "height": number,
+                    "target_app": ["type": "string", "description": "For until: app."],
+                    "shortcut": ["type": "string", "description": "For until: shortcut, like cmd+shift+s."],
+                    "idle_ms": ["type": "integer", "minimum": 500, "maximum": 120000, "description": "Default 4000."],
+                    "duration_ms": ["type": "integer", "minimum": 2000, "maximum": 600000, "description": "Longest to watch. Default 60000."],
+                    "prompt": ["type": "string", "maxLength": 160, "description": "What you asked them to try, shown as a bubble."],
+                    "speak": speakOption,
+                ],
+                []
+            ),
+            handler: toolWatchUser
+        ),
+        ToolDefinition(
+            name: "lasso_region",
+            description: "Ask the user to draw around something on screen with their mouse (a circle, loop or stroke) to show you what they mean, for example \"what's this?\" Returns the region in screen points, the element at its centre, and an image of what is inside it. Only the user's physical drawing counts. Esc cancels.",
+            inputSchema: obj(
+                [
+                    "prompt": ["type": "string", "maxLength": 160],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 600, "description": "Default 120."],
+                    "speak": speakOption,
+                ],
+                []
+            ),
+            handler: toolLassoRegion
+        ),
+        ToolDefinition(
+            name: "magnify",
+            description: "Show a live, circular zoom lens of a small region beside it, so a tiny control or dense text is readable while you explain it. Pin it to element_index (or x, y, width, height in screenshot pixels with app; screen points without). It updates in real time, never takes clicks, and closes after duration_ms or with clear: true.",
+            inputSchema: obj(
+                [
+                    "app": app,
+                    "element_index": ["type": ["string", "integer"]],
+                    "x": number, "y": number, "width": number, "height": number,
+                    "zoom": ["type": "number", "minimum": 1.5, "maximum": 8, "description": "Default 3."],
+                    "label": ["type": "string", "maxLength": 80],
+                    "duration_ms": ["type": "integer", "minimum": 1000, "maximum": 120000, "description": "Default 8000."],
+                    "clear": ["type": "boolean", "description": "Close your magnifier."],
+                    "speak": speakOption,
+                ],
+                []
+            ),
+            handler: toolMagnify
+        ),
+        ToolDefinition(
+            name: "suggest",
+            description: "Offer the user an idea on a small card in the top-right corner (\"Want me to rename these 40 files?\") with 1 to 3 buttons, the first being your primary action, and wait for their answer. Only a physical click by the user counts. Use it instead of acting on a guess.",
+            inputSchema: obj(
+                [
+                    "title": ["type": "string", "maxLength": 90],
+                    "body": ["type": "string", "maxLength": 240],
+                    "actions": ["type": "array", "items": ["type": "string", "maxLength": 24], "minItems": 1, "maxItems": 3, "description": "Default [\"Do it\", \"Not now\"]."],
+                    "symbol": ["type": "string", "description": "An SF Symbol name for the icon, like wand.and.stars. Default sparkles."],
+                    "timeout_s": ["type": "integer", "minimum": 5, "maximum": 900, "description": "Default 120."],
+                    "speak": speakOption,
+                ],
+                ["title"]
+            ),
+            handler: toolSuggest
+        ),
+        ToolDefinition(
+            name: "job",
+            description: "Show a job card for a long-running task in the bottom-left corner: title, current step, and progress (0 to 1, or omit for a busy bar). Call it again with the same id to update it, and finish with state done or failed. The card gives the user Pause and Stop buttons that act on you alone, so keep it updated while you work.",
+            inputSchema: obj(
+                [
+                    "id": ["type": "string", "maxLength": 64, "description": "Default main."],
+                    "title": ["type": "string", "maxLength": 80],
+                    "step": ["type": "string", "maxLength": 120],
+                    "progress": ["type": "number", "minimum": 0, "maximum": 1],
+                    "state": ["type": "string", "enum": ["running", "done", "failed"]],
+                    "clear": ["type": "boolean"],
+                ],
+                []
+            ),
+            handler: toolJob
+        ),
+        ToolDefinition(
             name: "clear_annotations",
             description: "Remove everything annotate drew.",
             inputSchema: obj([:], []),
             handler: toolClearAnnotations
+        ),
+        ToolDefinition(
+            name: "show_visual",
+            description: """
+            Render anything on the user's screen, live: write HTML with CSS, SVG, canvas, WebGL, scripts or CDN libraries \
+            (three.js, d3, Chart.js, GSAP...) and it appears in a transparent panel pinned beside or over an element, over a \
+            window, or across the screen. Use it to explain, teach, visualise data, diagram how something works, celebrate, \
+            or build a small interactive widget. The page gets window.maccu: data (your JSON), targets (named rects in the \
+            panel's CSS pixels, including anchor and window, each with x, y, width, height, cx, cy), side (where the anchor \
+            is: left/right/top/bottom/none), frame, reduceMotion, send(value) to report events to you, close(), \
+            on('update', fn), resize(w, h) to fit content, and curve(x1,y1,x2,y2) for arrow paths. Or pick a template \
+            (spotlight, coach, checklist, keycaps, confetti, chart, compare) and pass data. A design kit is preloaded: mc-card, mc-title, mc-sub, \
+            mc-pill, mc-gradient-text, mc-glow, mc-ring, mc-in, mc-stagger, mc-draw, CSS variables --mc-accent, --mc-accent-2, \
+            --mc-hot, --mc-ok, --mc-warn, --mc-ink, --mc-dim, --mc-glass. The background is transparent, so draw only what \
+            should show. Panels are click-through unless interactive, follow their window, are hidden from your screenshots, \
+            and showing the same id again replaces it. Esc or Pause clears every visual.
+            """,
+            inputSchema: obj(
+                [
+                    "id": ["type": "string", "maxLength": 64, "description": "Name for this visual, to update or clear it. Default main."],
+                    "html": ["type": "string", "description": "The page or fragment to render. With a template, extra HTML (styles, scripts) appended to it."],
+                    "template": [
+                        "type": "string",
+                        "enum": visualTemplates.keys.sorted(),
+                        "description": "A ready-made visual driven by data: " + visualTemplates.values.sorted { $0.name < $1.name }.map { "\($0.name): \($0.summary)" }.joined(separator: " "),
+                    ],
+                    "app": ["type": "string", "description": "Pin to this app's window (needs a fresh get_app_state). Omit for screen-level visuals."],
+                    "element_index": ["type": ["string", "integer"], "description": "Anchor element from the last get_app_state."],
+                    "x": number, "y": number, "width": number, "height": number,
+                    "placement": [
+                        "type": "string",
+                        "enum": ["beside", "over", "center", "window", "screen", "at"],
+                        "description": "beside the anchor (default with an anchor), over it exactly, centred on it or the window/screen (default otherwise), covering the window, covering the screen, or at the anchor's top-left. x, y, width, height are screenshot pixels with app, screen points without.",
+                    ],
+                    "panel_width": ["type": "number", "description": "Panel width in points for beside/center/at. Default 380."],
+                    "panel_height": ["type": "number", "description": "Panel height in points. Default 240."],
+                    "targets": [
+                        "type": "object",
+                        "description": "Named elements the page can draw to: {\"save\": 12, \"chart\": [x, y, w, h]}. Delivered as maccu.targets in panel coordinates.",
+                    ],
+                    "data": ["description": "Any JSON, delivered as maccu.data."],
+                    "interactive": ["type": "boolean", "description": "Let the user click and type in it (it is labelled as yours). Default false: clicks pass through."],
+                    "backdrop": ["type": "string", "enum": ["none", "glass", "dark"], "description": "A native frosted backdrop behind the page. Default none."],
+                    "follow_window": ["type": "boolean", "description": "Move with the app window. Default true."],
+                    "duration_ms": ["type": "integer", "minimum": 0, "maximum": 1800000, "description": "Lifetime; 0 keeps it until cleared. Default 30000."],
+                    "speak": speakOption,
+                ],
+                []
+            ),
+            handler: toolShowVisual
+        ),
+        ToolDefinition(
+            name: "update_visual",
+            description: "Change a live visual without redrawing it: run JavaScript in it (top-level await and return work; the returned value comes back to you), push new data (fires maccu.on('update')), move targets, or replace its html. Also collects what the user did in it (events from maccu.send), waits for the next event with wait_event_ms, reports page errors, and with snapshot: true returns a PNG of the visual so you can check how it looks.",
+            inputSchema: obj(
+                [
+                    "id": ["type": "string", "maxLength": 64, "description": "Default main."],
+                    "app": ["type": "string", "description": "Needed only to resolve element-index targets."],
+                    "script": ["type": "string", "description": "JavaScript function body run in the page, for example: document.querySelector('#n').textContent = 42; return 'ok'."],
+                    "html": ["type": "string", "description": "Replace the whole page."],
+                    "data": ["description": "New maccu.data."],
+                    "targets": ["type": "object", "description": "Replace maccu.targets, like show_visual."],
+                    "snapshot": ["type": "boolean", "description": "Return a PNG of the visual."],
+                    "wait_event_ms": ["type": "integer", "minimum": 0, "maximum": 600000, "description": "Wait up to this long for the user to trigger maccu.send."],
+                ],
+                []
+            ),
+            handler: toolUpdateVisual
+        ),
+        ToolDefinition(
+            name: "clear_visuals",
+            description: "Remove one live visual by id, or all of yours.",
+            inputSchema: obj(["id": ["type": "string", "maxLength": 64]], []),
+            handler: toolClearVisuals
         ),
         ToolDefinition(
             name: "ask_user",
@@ -836,7 +1009,7 @@ func toolDefinitions() -> [ToolDefinition] {
         ),
         ToolDefinition(
             name: "guide",
-            description: "Walk the user through a task step by step: for each step the cursor points at an element with an instruction and waits until the user clicks it, then moves on. Steps may carry annotate items. Set save_as to keep the tour (element-based, not pixels) so the user can replay it later from the Mac Computer Use menu without you.",
+            description: "Walk the user through a task step by step (up to 20 steps). A timeline bar across the top shows every step with Back, Show again, Skip/Next and Stop. Each step points at an element with an instruction and, by default, advances when the user clicks it; advance_on can instead wait for a shortcut, a switch to another app, or the user pressing Next. wait_for holds a step until an app (and optionally a window) is open, for steps that span apps. Steps may carry annotate items. Reports which steps the user skipped. Set save_as to keep the tour (element-based, not pixels) so the user can replay it later from the Mac Computer Use menu without you.",
             inputSchema: obj(
                 [
                     "app": app,
@@ -853,6 +1026,14 @@ func toolDefinitions() -> [ToolDefinition] {
                                 "instruction": ["type": "string", "maxLength": 140],
                                 "annotate": ["type": "array", "items": ["type": "object"]],
                                 "speak": speakOption,
+                                "advance_on": ["type": "string", "enum": ["click", "shortcut", "app", "next"], "description": "Default click with a target, next without."],
+                                "shortcut": ["type": "string", "description": "For advance_on shortcut, like cmd+s."],
+                                "target_app": ["type": "string", "description": "For advance_on app."],
+                                "wait_for": [
+                                    "type": "object",
+                                    "properties": ["app": ["type": "string"], "window": ["type": "string", "description": "Text the window title must contain."]],
+                                    "required": ["app"],
+                                ],
                             ],
                             "required": ["instruction"],
                         ],
@@ -873,8 +1054,10 @@ func toolDefinitions() -> [ToolDefinition] {
                 [
                     "text": ["type": "string", "maxLength": 400],
                     "wait": ["type": "boolean", "description": "Wait until the speech finishes. Default true."],
+                    "rate": ["type": "number", "minimum": 0.5, "maximum": 1.5, "description": "Speaking speed, 1 = normal. Default: the user's setting."],
+                    "voice": ["type": "string", "description": "A voice name (Samantha), language (en-GB) or identifier; \"list\" returns the installed voices. Default: the user's setting."],
                 ],
-                ["text"]
+                []
             ),
             handler: toolSay
         ),

@@ -133,3 +133,57 @@ func cursorIdentityColorIndex(forClientKey key: String) -> Int {
     }
     return Int(hash % UInt64(cursorIdentityPalette.count))
 }
+
+// MARK: - Reactions
+
+enum CursorEmote: String, CaseIterable {
+    case nod, shake, sparkle, celebrate
+}
+
+/// How a reaction displaces the cursor at one instant.
+struct CursorEmotePose: Equatable {
+    var lift: CGFloat = 0     // points, y-up
+    var tilt: CGFloat = 0     // radians
+    var scale: CGFloat = 1
+    var sparkle: CGFloat = 0  // 0 = none, else burst progress in (0, 1]
+    static let rest = CursorEmotePose()
+}
+
+func cursorEmoteDuration(_ emote: CursorEmote) -> TimeInterval {
+    switch emote {
+    case .nod: return 0.8
+    case .shake: return 0.45
+    case .sparkle: return 0.9
+    case .celebrate: return 1.1
+    }
+}
+
+func cursorEmotePose(_ emote: (kind: CursorEmote, start: CFTimeInterval)?, now: CFTimeInterval) -> CursorEmotePose {
+    guard let emote else { return .rest }
+    let duration = cursorEmoteDuration(emote.kind)
+    let t = (now - emote.start) / duration
+    guard t >= 0, t < 1 else { return .rest }
+    let fade = CGFloat(1 - t)
+    switch emote.kind {
+    case .nod:
+        // Two quick dips, like a nod.
+        return CursorEmotePose(lift: -CGFloat(abs(sin(t * .pi * 2))) * 5 * fade, tilt: CGFloat(sin(t * .pi * 2)) * 0.08 * fade)
+    case .shake:
+        return .rest // the view's own shake offset handles this
+    case .sparkle:
+        return CursorEmotePose(scale: 1 + CGFloat(sin(min(t * 3, 1) * .pi)) * 0.12, sparkle: CGFloat(t))
+    case .celebrate:
+        let hop = CGFloat(abs(sin(t * .pi * 3))) * 9 * fade
+        return CursorEmotePose(lift: hop, tilt: CGFloat(sin(t * .pi * 4)) * 0.18 * fade, scale: 1 + 0.1 * fade, sparkle: CGFloat(t))
+    }
+}
+
+/// Where a following cursor rests relative to the person's pointer (Cocoa,
+/// y-up): just below and to the right, out of the way of what they click.
+let buddyFollowOffset = CGPoint(x: 30, y: -30)
+
+/// One spring step toward `target`; frame-rate independent.
+func buddyFollowStep(from current: CGPoint, to target: CGPoint, dt: CFTimeInterval) -> CGPoint {
+    let k = CGFloat(1 - exp(-dt * 12))
+    return CGPoint(x: current.x + (target.x - current.x) * k, y: current.y + (target.y - current.y) * k)
+}
