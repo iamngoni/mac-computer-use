@@ -58,7 +58,11 @@ func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
 
     let win: AXUIElement
     if let selectedCandidate {
-        guard let matched = accessibilityWindow(matching: selectedCandidate, in: axApp) else {
+        guard let matched = accessibilityWindow(
+            matching: selectedCandidate,
+            in: axApp,
+            expectedPID: app.processIdentifier
+        ) else {
             return toolText(
                 "Accessibility window identity could not be proven for window_id=\(selectedCandidate.id). Call list_windows again.",
                 isError: true

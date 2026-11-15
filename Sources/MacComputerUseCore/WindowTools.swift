@@ -71,7 +71,11 @@ func toolSetWindowFrame(_ args: [String: Any]) -> [String: Any] {
     }
 
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
-    guard let window = accessibilityWindow(matching: candidate, in: axApp) else {
+    guard let window = accessibilityWindow(
+        matching: candidate,
+        in: axApp,
+        expectedPID: app.processIdentifier
+    ) else {
         return toolText("Accessibility window not found for window_id=\(windowId).", isError: true)
     }
     guard let originalPositionValue = axCopy(window, "AXPosition"),

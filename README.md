@@ -27,7 +27,7 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 - **One menu-bar manager.** One status item lists active apps and connected clients, and offers Pause/Resume Agents, Show Agent Preview, Guided Tours, Setup, updates and Quit. Quitting turns automation off until you open the app again.
 - **Native setup.** Opening the app shows permission status, one-click registration for Codex and Claude Code, copyable fallback commands, and a launch-at-login switch.
 - **Safe automatic updates.** Signed releases check and download through Sparkle. Installation waits until no tool call is in flight, then restarts the service; relays reconnect to the new version on their next call.
-- **Exact window identity.** `list_windows` returns WindowServer IDs. Exact window operations use `_AXUIElementGetWindow` when available and reject ambiguous fallback matches.
+- **Exact window identity.** `list_windows` returns WindowServer IDs. Exact window operations use `_AXUIElementGetWindow` to match the precise ID across `AXWindows`, `AXFocusedWindow`, and `AXMainWindow`, while rejecting ambiguous or cross-process matches.
 - **Works across macOS apps.** Targets browsers, Music, Notes, Finder, Mail, and other native apps without requiring them to be frontmost.
 - **Accessibility-tree perception.** `get_app_state` returns a compact, indexed tree of the interactive elements in an app's window, plus a screenshot. Element indices are stable and used by the action tools, and are scoped to the app that produced them.
 - **One interaction coordinate space.** Tree coordinates and `x,y` accepted by `click` and `drag` use screenshot pixels. Window geometry is the explicit exception: `list_windows` reports and `set_window_frame` accepts global screen points.

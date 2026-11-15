@@ -817,6 +817,17 @@ final class CoreContractTests: XCTestCase {
         XCTAssertNotNil(ExclusiveFileLease.acquire(at: lockURL))
     }
 
+    func testAccessibilityWindowCandidatesIncludeFocusedAndMainWhenWindowListIsEmpty() {
+        XCTAssertEqual(
+            accessibilityWindowCandidates(listed: [Int](), focused: 1, main: 2),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            accessibilityWindowCandidates(listed: [0], focused: nil, main: 1),
+            [0, 1]
+        )
+    }
+
     func testExactWindowAuthorizationRequiresIdentityResolver() {
         XCTAssertTrue(canAuthorizeExactWindow(identityResolverAvailable: true))
         XCTAssertFalse(canAuthorizeExactWindow(identityResolverAvailable: false))
