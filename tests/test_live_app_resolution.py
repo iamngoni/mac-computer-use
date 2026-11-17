@@ -1077,7 +1077,12 @@ class LiveAppResolutionTests(unittest.TestCase):
         warmed = self.client.call_tool("open_app", {"app": self.fixture_bundle_id})
         self.assertFalse(warmed.get("isError"), text_content(warmed))
 
-        click_client = MCPClient(SERVER_BINARY)
+        # Widen the pre-delivery pause so the move lands inside it even on
+        # slow hosted CI runners.
+        click_environment = os.environ.copy()
+        click_environment.setdefault("MACCU_IN_PROCESS", "1")
+        click_environment["MACCU_TEST_CLICK_DELAY_MS"] = "1500"
+        click_client = MCPClient(SERVER_BINARY, environment=click_environment)
         try:
             snapshot = click_client.call_tool(
                 "get_app_state", {"app": self.fixture_bundle_id}
@@ -1133,7 +1138,7 @@ class LiveAppResolutionTests(unittest.TestCase):
                 },
             )
             self.assertFalse(moved.get("isError"), text_content(moved))
-            click_thread.join(timeout=3)
+            click_thread.join(timeout=6)
             self.assertFalse(click_thread.is_alive(), "click request did not finish")
             self.assertFalse(click_error, click_error)
             self.assertTrue(click_result.get("isError"), text_content(click_result))

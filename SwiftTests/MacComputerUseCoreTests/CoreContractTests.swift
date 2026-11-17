@@ -828,6 +828,14 @@ final class CoreContractTests: XCTestCase {
         )
     }
 
+    func testClickPreDeliveryDelayDefaultsAndClamps() {
+        XCTAssertEqual(clickPreDeliveryDelayMicroseconds(environment: [:]), 120_000)
+        XCTAssertEqual(clickPreDeliveryDelayMicroseconds(environment: ["MACCU_TEST_CLICK_DELAY_MS": "1500"]), 1_500_000)
+        XCTAssertEqual(clickPreDeliveryDelayMicroseconds(environment: ["MACCU_TEST_CLICK_DELAY_MS": "99999"]), 2_000_000)
+        XCTAssertEqual(clickPreDeliveryDelayMicroseconds(environment: ["MACCU_TEST_CLICK_DELAY_MS": "-1"]), 120_000)
+        XCTAssertEqual(clickPreDeliveryDelayMicroseconds(environment: ["MACCU_TEST_CLICK_DELAY_MS": "x"]), 120_000)
+    }
+
     func testExactWindowAuthorizationRequiresIdentityResolver() {
         XCTAssertTrue(canAuthorizeExactWindow(identityResolverAvailable: true))
         XCTAssertFalse(canAuthorizeExactWindow(identityResolverAvailable: false))
