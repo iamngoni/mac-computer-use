@@ -57,7 +57,8 @@ func snapshotContextIsCurrent(_ snapshot: SnapshotContext) -> Bool {
           abs(candidate.bounds.height - snapshot.windowBounds.height) <= 2,
           accessibilityWindow(
               matching: candidate,
-              in: AXUIElementCreateApplication(snapshot.pid)
+              in: AXUIElementCreateApplication(snapshot.pid),
+              expectedPID: snapshot.pid
           ) != nil else {
         return false
     }

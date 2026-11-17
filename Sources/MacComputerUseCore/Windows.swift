@@ -84,11 +84,39 @@ func canAuthorizeExactWindow(identityResolverAvailable: Bool) -> Bool {
     identityResolverAvailable
 }
 
-func accessibilityWindow(matching candidate: WindowCandidate, in app: AXUIElement) -> AXUIElement? {
-    let windows = axArr(app, "AXWindows")
-    guard !windows.isEmpty else { return nil }
+func accessibilityWindowCandidates<Element>(
+    listed: [Element],
+    focused: Element?,
+    main: Element?
+) -> [Element] {
+    listed + [focused, main].compactMap { $0 }
+}
 
+func accessibilityWindow(
+    matching candidate: WindowCandidate,
+    in app: AXUIElement,
+    expectedPID: pid_t
+) -> AXUIElement? {
     let identity = AccessibilityWindowIdentity.shared
     guard canAuthorizeExactWindow(identityResolverAvailable: identity.available) else { return nil }
-    return windows.first { identity.windowID(for: $0) == candidate.id }
+
+    // Some macOS/app combinations return an empty or incomplete AXWindows array while
+    // still exposing the real window through AXFocusedWindow or AXMainWindow. Include
+    // those references, but authorize only an exact WindowServer ID from the same PID.
+    let windows = accessibilityWindowCandidates(
+        listed: axArr(app, "AXWindows"),
+        focused: axElement(app, "AXFocusedWindow"),
+        main: axElement(app, "AXMainWindow")
+    )
+
+    for window in windows {
+        var ownerPID: pid_t = 0
+        guard AXUIElementGetPid(window, &ownerPID) == .success,
+              ownerPID == expectedPID,
+              identity.windowID(for: window) == candidate.id else {
+            continue
+        }
+        return window
+    }
+    return nil
 }

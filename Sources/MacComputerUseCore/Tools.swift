@@ -58,7 +58,11 @@ func toolGetAppState(_ args: [String: Any]) -> [String: Any] {
 
     let win: AXUIElement
     if let selectedCandidate {
-        guard let matched = accessibilityWindow(matching: selectedCandidate, in: axApp) else {
+        guard let matched = accessibilityWindow(
+            matching: selectedCandidate,
+            in: axApp,
+            expectedPID: app.processIdentifier
+        ) else {
             return toolText(
                 "Accessibility window identity could not be proven for window_id=\(selectedCandidate.id). Call list_windows again.",
                 isError: true
@@ -295,7 +299,7 @@ func toolClick(_ args: [String: Any]) -> [String: Any] {
             return veto
         }
         OverlayController.shared.moveCursorQuartz(p)
-        mouseMoveTo(p, pid: pid); usleep(120_000)
+        mouseMoveTo(p, pid: pid); usleep(clickPreDeliveryDelayMicroseconds())
         if cancelFlag.value { return toolText("Cancelled (Esc).") }
         guard mouseClick(
             p,
@@ -1083,4 +1087,16 @@ func dispatchTool(_ name: String, _ args: [String: Any]) -> [String: Any] {
     }
     if let refusal = toolCallGate?(name) { return refusal }
     return tool.handler(args)
+}
+
+/// Pause between moving the pointer and delivering an application-scoped click.
+/// Integration tests on slow CI hosts widen it through `MACCU_TEST_CLICK_DELAY_MS`
+/// (clamped to 2 s) so they can change the window while the click waits.
+func clickPreDeliveryDelayMicroseconds(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> useconds_t {
+    guard let raw = environment["MACCU_TEST_CLICK_DELAY_MS"], let ms = Int(raw), ms >= 0 else {
+        return 120_000
+    }
+    return useconds_t(min(ms, 2_000) * 1_000)
 }
