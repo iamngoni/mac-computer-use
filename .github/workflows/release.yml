@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '13.0'

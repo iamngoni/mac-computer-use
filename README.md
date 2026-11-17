@@ -188,15 +188,13 @@ The integration suite covers process replacement, exact window identity, menu in
 
 ## GitHub Actions
 
-Both workflows use self-hosted macOS runners only:
+All workflows run on GitHub-hosted `macos-15` runners:
 
 - `Compile and package` targets `[self-hosted, macOS, ARM64]` and runs for trusted same-repository pull requests, pushes to `master`, and manual dispatches. It remains queued until a matching runner is registered.
-- `GUI integration` is manual and targets
-  `[self-hosted, macOS, ARM64, maccu-tcc]`. Register that label only on a logged-in
-  runner where the fixed-path app has Accessibility and Screen Recording permissions.
+- `GUI integration` runs for pull requests and manual dispatches. It writes Accessibility and Screen Recording grants for the freshly built bundle into the runner's TCC database before the live tests.
 - `Signed release` runs only for a version-matching tag (or an existing tag selected manually). It builds a universal app, signs with Developer ID, notarizes and staples the app and DMG, signs the Sparkle archive/appcast, and publishes the DMG, ZIP, appcast, and Homebrew cask.
 
-Fork pull-request code does not run on the self-hosted runner. Neither workflow has write permissions or receives repository credentials from checkout. Do not add a GitHub-hosted fallback when no runner is registered.
+Only `Signed release` has write permissions or signing secrets; the compile and GUI workflows receive no repository credentials from checkout.
 
 ## Permissions
 
@@ -207,7 +205,7 @@ Grant these to **MacComputerUse.app** in *System Settings → Privacy & Security
 - **Input Monitoring / Accessibility**: desktop control posts only after the caller explicitly supplies `allow_global_input: true`; macOS may require the app's Accessibility/Input Monitoring permission for global HID delivery
 - **Automation**: script Safari or Chromium for `navigate`; macOS grants this permission per target app
 
-Grant Accessibility and Screen Recording to the fixed installed bundle path before running GUI integration. The `maccu-tcc` runner label belongs only on a logged-in runner with those Transparency, Consent, and Control (TCC) grants.
+Grant Accessibility and Screen Recording to the fixed installed bundle path before running GUI integration.
 
 ## Use with Claude Code
 

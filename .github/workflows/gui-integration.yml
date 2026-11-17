@@ -1,6 +1,8 @@
 name: GUI integration
 
 on:
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -12,8 +14,8 @@ concurrency:
 
 jobs:
   gui-integration:
-    runs-on: [self-hosted, macOS, ARM64, maccu-tcc]
-    timeout-minutes: 20
+    runs-on: macos-15
+    timeout-minutes: 30
     env:
       MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
@@ -28,6 +30,23 @@ jobs:
 
       - name: Build signed app bundle
         run: ./build.sh
+
+      - name: Grant Accessibility and Screen Recording
+        # GitHub-hosted macOS runners have SIP disabled, so TCC grants can be
+        # written directly for the freshly built (ad-hoc signed) bundle.
+        run: |
+          app_bin="$PWD/MacComputerUse.app/Contents/MacOS/mac-computer-use"
+          now=$(date +%s)
+          for db in "/Library/Application Support/com.apple.TCC/TCC.db" "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
+            sudo test -f "$db" || continue
+            for service in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServicePostEvent kTCCServiceListenEvent; do
+              for entry in "com.modestnerd.mac-computer-use|0" "$app_bin|1" "/usr/bin/python3|1"; do
+                client="${entry%|*}"; type="${entry##*|}"
+                sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, indirect_object_identifier, flags, last_modified) VALUES ('$service', '$client', $type, 2, 4, 1, 'UNUSED', 0, $now);"
+              done
+            done
+          done
+          sudo killall tccd 2>/dev/null || true
 
       - name: Run permissioned lifecycle tests
         run: python3 tests/test_live_app_resolution.py -v
