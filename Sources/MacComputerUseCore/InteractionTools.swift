@@ -179,7 +179,7 @@ func voiceMatches(_ voice: String, engine: VoiceEngineKind) -> Bool {
     case .elevenlabs:
         let voices = CompanionPreferences.elevenLabsVoices
         // Without a loaded list there is nothing to check against.
-        return voices.isEmpty || voices.contains { $0.id == voice || $0.name.caseInsensitiveCompare(voice) == .orderedSame }
+        return voices.isEmpty || ElevenLabsVoice.find(voice, in: voices) != nil
     }
 }
 

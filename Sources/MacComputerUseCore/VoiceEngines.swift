@@ -227,6 +227,20 @@ public struct ElevenLabsVoice: Identifiable, Equatable, Codable, Sendable {
     public let id: String
     public let name: String
     public let detail: String
+
+    /// "George" for "George - Warm, Captivating Storyteller".
+    public var shortName: String {
+        name.components(separatedBy: " - ").first?.trimmingCharacters(in: .whitespaces) ?? name
+    }
+
+    /// Finds a voice by id, full name or short name, ignoring case.
+    public static func find(_ query: String?, in voices: [ElevenLabsVoice]) -> ElevenLabsVoice? {
+        guard let query = query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else { return nil }
+        func same(_ a: String) -> Bool { a.caseInsensitiveCompare(query) == .orderedSame }
+        return voices.first { $0.id == query }
+            ?? voices.first { same($0.name) }
+            ?? voices.first { same($0.shortName) }
+    }
 }
 
 public enum ElevenLabsModel: String, CaseIterable, Sendable {

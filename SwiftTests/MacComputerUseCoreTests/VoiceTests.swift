@@ -98,6 +98,20 @@ final class VoiceTests: XCTestCase {
         XCTAssertNil(alignedWordTimings(text: text, characters: characters, starts: [0]))
     }
 
+    func testElevenLabsVoiceFindsByIdFullOrShortName() {
+        let voices = [
+            ElevenLabsVoice(id: "JBF", name: "George - Warm, Captivating Storyteller", detail: "british, male"),
+            ElevenLabsVoice(id: "pFZ", name: "Lily - Velvety Actress", detail: "british, female"),
+            ElevenLabsVoice(id: "ABC", name: "Georgia", detail: ""),
+        ]
+        XCTAssertEqual(ElevenLabsVoice.find("george", in: voices)?.id, "JBF")
+        XCTAssertEqual(ElevenLabsVoice.find("Lily - Velvety Actress", in: voices)?.id, "pFZ")
+        XCTAssertEqual(ElevenLabsVoice.find("pFZ", in: voices)?.id, "pFZ")
+        XCTAssertEqual(ElevenLabsVoice.find("Georgia", in: voices)?.id, "ABC")
+        XCTAssertNil(ElevenLabsVoice.find("Geo", in: voices))
+        XCTAssertNil(ElevenLabsVoice.find("  ", in: voices))
+    }
+
     func testElevenLabsResponseParsesAudioAndTimings() throws {
         let body: [String: Any] = [
             "audio_base64": Data("mp3".utf8).base64EncodedString(),
