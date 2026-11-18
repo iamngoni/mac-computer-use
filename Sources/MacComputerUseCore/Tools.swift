@@ -1059,7 +1059,7 @@ func toolDefinitions() -> [ToolDefinition] {
                     "text": ["type": "string", "maxLength": 400],
                     "wait": ["type": "boolean", "description": "Wait until the speech finishes. Default true."],
                     "rate": ["type": "number", "minimum": 0.5, "maximum": 1.5, "description": "Speaking speed, 1 = normal. Default: the user's setting."],
-                    "voice": ["type": "string", "description": "A voice name (Samantha), language (en-GB) or identifier; \"list\" returns the installed voices. Default: the user's setting."],
+                    "voice": ["type": "string", "description": "A voice of the engine the user chose in Voice settings (Mac voices, Kokoro or ElevenLabs): a name, a language (en-GB, Mac voices only) or an id; \"list\" returns them. Default: the user's setting."],
                 ],
                 []
             ),

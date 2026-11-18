@@ -9,6 +9,9 @@ import SwiftUI
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private let model: SetupModel
     var statusItemFrame: () -> CGRect? = { nil }
+    var openVoiceSettings: () -> Void = {} {
+        didSet { model.openVoiceSettings = openVoiceSettings }
+    }
 
     init(executableURL: URL, serviceHost: ServiceHost? = nil) {
         model = SetupModel(

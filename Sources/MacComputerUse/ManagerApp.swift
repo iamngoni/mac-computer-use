@@ -6,6 +6,7 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
     private var managerLease: ManagerProcessLease?
     private var statusCoordinator: AutomationStatusBarCoordinator?
     private var setupWindowController: SetupWindowController?
+    private var voiceWindowController: VoiceSettingsWindowController?
     private var updateCoordinator: UpdateCoordinator?
     private var serviceHost: ServiceHost?
     private var serviceStopped = false
@@ -50,7 +51,11 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             canInstall: { [weak host] in host?.hasBusySession != true },
             prepareForInstall: { [weak self] in self?.stopService(userInitiated: false) }
         )
+        let voiceWindow = VoiceSettingsWindowController(host: host)
+        voiceWindow.model.onChange = { [weak self] in self?.refreshStatusItem() }
+        setup.openVoiceSettings = { [weak voiceWindow] in voiceWindow?.show() }
         setupWindowController = setup
+        voiceWindowController = voiceWindow
         updateCoordinator = updater
 
         let cursor = AutomationCursorAssets.load()?.pointer ?? NSImage(
@@ -71,6 +76,7 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             setAgentPreviewEnabled: { [weak host] enabled in host?.agentPreviewEnabled = enabled },
             voiceEnabled: { [weak host] in host?.voiceEnabled == true },
             setVoiceEnabled: { [weak host] enabled in host?.voiceEnabled = enabled },
+            openVoiceSettings: { [weak voiceWindow] in voiceWindow?.show() },
             tours: { [weak host] in (host?.savedTours ?? []).map { (name: $0.name, title: $0.title) } },
             playTour: { [weak host] name in host?.playTour(named: name) },
             openToursFolder: { [weak host] in host?.openToursFolder() },
@@ -86,7 +92,9 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
         refreshStatusItem()
 
         let defaults = UserDefaults.standard
-        if CommandLine.arguments.contains("--show-setup") {
+        if CommandLine.arguments.contains("--show-voice") {
+            voiceWindow.show()
+        } else if CommandLine.arguments.contains("--show-setup") {
             setup.showSetup()
         } else if !launchedInBackground && !defaults.bool(forKey: "hasPresentedSetup") {
             defaults.set(true, forKey: "hasPresentedSetup")

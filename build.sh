@@ -24,7 +24,7 @@ else
   SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 fi
 BUILD_ARCHS="${BUILD_ARCHS:-$(uname -m)}"
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "VERSION must contain three numeric components." >&2
@@ -84,6 +84,11 @@ else
   lipo -create "${binary_paths[@]}" -output "$APP/Contents/MacOS/$EXECUTABLE"
 fi
 cp .build/checkouts/Sparkle/LICENSE "$APP/Contents/Resources/Licenses/Sparkle-LICENSE.txt"
+cp .build/checkouts/FluidAudio/LICENSE "$APP/Contents/Resources/Licenses/FluidAudio-LICENSE.txt"
+# SwiftPM resource bundles from dependencies (FluidAudio's text frontend).
+for bundle in "$bin_dir"/*.bundle; do
+  [[ -d "$bundle" ]] && ditto "$bundle" "$APP/Contents/Resources/$(basename "$bundle")"
+done
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
 if ! otool -l "$APP/Contents/MacOS/$EXECUTABLE" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks'; then
@@ -127,7 +132,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIconName</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSAppleEventsUsageDescription</key><string>Mac Computer Use needs permission to navigate supported browsers on your behalf.</string>
   <key>NSScreenCaptureUsageDescription</key><string>Mac Computer Use captures the app window selected by your MCP client.</string>
 $sparkle_configuration

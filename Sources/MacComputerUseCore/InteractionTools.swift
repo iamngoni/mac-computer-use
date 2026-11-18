@@ -148,17 +148,50 @@ func speakAloud(_ text: String?) -> String {
     return " Also spoken aloud."
 }
 
+/// The voices `say` can pick from with the engine the person chose in
+/// Voice settings.
+func voiceListText(_ engine: VoiceEngineKind) -> String {
+    switch engine {
+    case .mac:
+        let voices = availableSpeechVoiceDetails()
+        let lines = voices.map { voice in
+            "\(voice.name)\(voice.quality.map { " (\($0))" } ?? "") · \(voice.language) — \(voice.id)"
+        }
+        return "Mac voices: \(voices.count) installed. Pass a name, language (en-GB) or identifier as voice:\n" + lines.joined(separator: "\n")
+    case .kokoro:
+        let lines = KokoroCatalog.voices.map { "\($0.name) · \($0.accent) — \($0.id)" }
+        return "Kokoro voices (on this Mac). Pass a name or id as voice:\n" + lines.joined(separator: "\n")
+    case .elevenlabs:
+        let voices = CompanionPreferences.elevenLabsVoices
+        guard !voices.isEmpty else {
+            return "ElevenLabs is chosen, but no voices are loaded yet. The person can verify their key in Voice settings; until then say uses their default voice."
+        }
+        let lines = voices.map { "\($0.name)\($0.detail.isEmpty ? "" : " · \($0.detail)") — \($0.id)" }
+        return "ElevenLabs voices in the person's account. Pass a name or id as voice:\n" + lines.joined(separator: "\n")
+    }
+}
+
+/// Whether `voice` names a voice of the chosen engine.
+func voiceMatches(_ voice: String, engine: VoiceEngineKind) -> Bool {
+    switch engine {
+    case .mac: return findSpeechVoice(voice) != nil
+    case .kokoro: return KokoroCatalog.find(voice) != nil
+    case .elevenlabs:
+        let voices = CompanionPreferences.elevenLabsVoices
+        // Without a loaded list there is nothing to check against.
+        return voices.isEmpty || voices.contains { $0.id == voice || $0.name.caseInsensitiveCompare(voice) == .orderedSame }
+    }
+}
+
 func toolSay(_ args: [String: Any]) -> [String: Any] {
     guard OverlayController.shared.isServiceAttached else { return serviceRequiredResult("say") }
     if (args["voice"] as? String)?.lowercased() == "list" {
-        let voices = availableSpeechVoices()
-        let lines = voices.map { "\($0.name) (\($0.language)) — \($0.id)" }
-        return toolText("\(voices.count) voices installed. Pass a name, language (en-GB) or identifier as voice:\n" + lines.joined(separator: "\n"))
+        return toolText(voiceListText(CompanionPreferences.voiceEngine))
     }
     guard let text = trimmedText(args, "text", limit: 400) else { return toolText("say needs text.", isError: true) }
     guard WorkerSession.shared.isVoiceEnabled else { return voiceMutedResult }
-    if let voice = args["voice"] as? String, findSpeechVoice(voice) == nil {
-        return toolText("No installed voice matches “\(voice)”. Call say with voice: \"list\" to see them.", isError: true)
+    if let voice = args["voice"] as? String, !voiceMatches(voice, engine: CompanionPreferences.voiceEngine) {
+        return toolText("No voice matches “\(voice)”. Call say with voice: \"list\" to see them.", isError: true)
     }
     let wait = strictJSONBoolean(args["wait"]) ?? true
     var request: [String: Any] = ["text": text, "wait": wait]
