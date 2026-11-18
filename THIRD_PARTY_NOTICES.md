@@ -12,8 +12,8 @@ The complete upstream license and its external-component notices are packaged at
 
 ## FluidAudio and Kokoro
 
-The optional Kokoro voice runs through FluidAudio, which is compiled in with its
-text-to-speech parts and the NeMo text-normalisation engine (text-processing-rs).
+The optional Kokoro voice runs through FluidAudio, which is compiled in together with
+the NeMo text-normalisation engine (text-processing-rs).
 The Kokoro 82M model is not bundled: it is downloaded from Hugging Face
 (FluidInference/kokoro-82m-coreml) only when the person chooses Kokoro in Voice settings.
 

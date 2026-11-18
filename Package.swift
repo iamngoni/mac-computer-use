@@ -15,12 +15,11 @@ let package = Package(
             url: "https://github.com/sparkle-project/Sparkle",
             exact: "2.9.6"
         ),
-        // Kokoro, the free on-device neural voice. Only its text-to-speech
-        // parts and text normalisation are compiled in.
+        // Kokoro, the free on-device neural voice. FluidAudio's default
+        // traits are kept: Swift before 6.2 (CI's Xcode 16) can't select them.
         .package(
             url: "https://github.com/FluidInference/FluidAudio",
-            exact: "0.18.3",
-            traits: ["TTS", "NemoTextProcessing"]
+            exact: "0.18.3"
         ),
     ],
     targets: [
