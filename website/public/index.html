@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Mac Computer Use — let AI agents use your Mac, safely</title>
-<meta name="description" content="Mac Computer Use is a free, open-source macOS app that lets Claude Code, Codex, Cursor, Gemini CLI and other MCP clients see and use Mac apps in the background, without moving your pointer. Esc stops everything.">
+<meta name="description" content="Mac Computer Use is a free, open-source macOS app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use Mac apps in the background, without moving your pointer. Esc stops everything.">
 <link rel="canonical" href="https://mcu.iamngoni.dev/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="author" content="Ngonidzashe Mangudya">
@@ -85,7 +85,7 @@
   <section class="hero page">
     <div class="hero-text">
       <h1>Let your agent use your Mac, without taking it from&nbsp;you.</h1>
-      <p class="lede">Mac Computer Use is a small Mac app that lets Claude Code, Codex, Cursor, Gemini CLI and other MCP clients see and use your apps. It works in the background, leaves your pointer alone, and stops the moment you press <kbd>esc</kbd>.</p>
+      <p class="lede">Mac Computer Use is a small Mac app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use your apps. It works in the background, leaves your pointer alone, and stops the moment you press <kbd>esc</kbd>.</p>
       <div class="dl">
         <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
         <p class="dl-meta"><span data-version>Latest version</span> · Apple silicon and Intel · macOS 13 or later<span data-size></span> · <a class="ink" href="/download/zip">ZIP</a></p>
@@ -174,8 +174,12 @@
         <div class="agents" role="tablist" aria-label="Agent">
         <button type="button" role="tab" id="tab-claude" aria-controls="pane-claude" aria-selected="true">Claude Code</button>
         <button type="button" role="tab" id="tab-codex" aria-controls="pane-codex" aria-selected="false" tabindex="-1">Codex</button>
-        <button type="button" role="tab" id="tab-gemini" aria-controls="pane-gemini" aria-selected="false" tabindex="-1">Gemini CLI</button>
+        <button type="button" role="tab" id="tab-opencode" aria-controls="pane-opencode" aria-selected="false" tabindex="-1">OpenCode</button>
         <button type="button" role="tab" id="tab-cursor" aria-controls="pane-cursor" aria-selected="false" tabindex="-1">Cursor</button>
+        <button type="button" role="tab" id="tab-gemini" aria-controls="pane-gemini" aria-selected="false" tabindex="-1">Gemini CLI</button>
+        <button type="button" role="tab" id="tab-copilot" aria-controls="pane-copilot" aria-selected="false" tabindex="-1">Copilot CLI</button>
+        <button type="button" role="tab" id="tab-muse" aria-controls="pane-muse" aria-selected="false" tabindex="-1">Muse Code</button>
+        <button type="button" role="tab" id="tab-amp" aria-controls="pane-amp" aria-selected="false" tabindex="-1">Amp</button>
         <button type="button" role="tab" id="tab-vscode" aria-controls="pane-vscode" aria-selected="false" tabindex="-1">VS Code</button>
         <button type="button" role="tab" id="tab-other" aria-controls="pane-other" aria-selected="false" tabindex="-1">Any MCP client</button>
         </div>
@@ -183,8 +187,25 @@
   "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="claude mcp add --scope user mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
         <div class="pane" role="tabpanel" id="pane-codex" aria-labelledby="tab-codex" hidden><div class="code"><pre><code>codex mcp add mac-computer-use -- \
   "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="codex mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
-        <div class="pane" role="tabpanel" id="pane-gemini" aria-labelledby="tab-gemini" hidden><div class="code"><pre><code>gemini mcp add --scope user mac-computer-use \
-  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="gemini mcp add --scope user mac-computer-use &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-opencode" aria-labelledby="tab-opencode" hidden><p class="pane-note">Add to <code>~/.config/opencode/opencode.json</code>, or run <code>opencode mcp add</code> and pick a local server.</p><div class="code"><pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mac-computer-use": {
+      "type": "local",
+      "command": ["/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use", "mcp"],
+      "enabled": true
+    }
+  }
+}</code></pre><button type="button" class="copy" data-copy="{
+  &quot;$schema&quot;: &quot;https://opencode.ai/config.json&quot;,
+  &quot;mcp&quot;: {
+    &quot;mac-computer-use&quot;: {
+      &quot;type&quot;: &quot;local&quot;,
+      &quot;command&quot;: [&quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;, &quot;mcp&quot;],
+      &quot;enabled&quot;: true
+    }
+  }
+}">Copy</button></div></div>
         <div class="pane" role="tabpanel" id="pane-cursor" aria-labelledby="tab-cursor" hidden><p class="pane-note">Add to <code>~/.cursor/mcp.json</code>, then turn it on under Settings → MCP.</p><div class="code"><pre><code>{
   "mcpServers": {
     "mac-computer-use": {
@@ -200,8 +221,16 @@
     }
   }
 }">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-gemini" aria-labelledby="tab-gemini" hidden><div class="code"><pre><code>gemini mcp add --scope user mac-computer-use \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="gemini mcp add --scope user mac-computer-use &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-copilot" aria-labelledby="tab-copilot" hidden><div class="code"><pre><code>copilot mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="copilot mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-muse" aria-labelledby="tab-muse" hidden><div class="code"><pre><code>muse mcp add mac-computer-use --user -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="muse mcp add mac-computer-use --user -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-amp" aria-labelledby="tab-amp" hidden><div class="code"><pre><code>amp mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="amp mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
         <div class="pane" role="tabpanel" id="pane-vscode" aria-labelledby="tab-vscode" hidden><p class="pane-note">Then use it from Copilot Chat in agent mode.</p><div class="code"><pre><code>code --add-mcp '{"name":"mac-computer-use","command":"/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use","args":["mcp"]}'</code></pre><button type="button" class="copy" data-copy="code --add-mcp &#x27;{&quot;name&quot;:&quot;mac-computer-use&quot;,&quot;command&quot;:&quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;,&quot;args&quot;:[&quot;mcp&quot;]}&#x27;">Copy</button></div></div>
-        <div class="pane" role="tabpanel" id="pane-other" aria-labelledby="tab-other" hidden><p class="pane-note">Claude Desktop, Windsurf, Zed, Cline and other clients take this stdio server config.</p><div class="code"><pre><code>{
+        <div class="pane" role="tabpanel" id="pane-other" aria-labelledby="tab-other" hidden><p class="pane-note">Claude Desktop, Windsurf, Zed, Cline, Kiro, Goose and other clients take this stdio server config.</p><div class="code"><pre><code>{
   "mcpServers": {
     "mac-computer-use": {
       "command": "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use",

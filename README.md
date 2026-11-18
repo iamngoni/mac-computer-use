@@ -225,14 +225,30 @@ codex mcp add mac-computer-use -- \
   "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
 ```
 
-Any other MCP client works the same way: it is a stdio server started with `mcp`. Gemini CLI:
+Any other MCP client works the same way: it is a stdio server started with `mcp`.
 
 ```bash
-gemini mcp add --scope user mac-computer-use \
-  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
+gemini mcp add --scope user mac-computer-use "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp     # Gemini CLI
+copilot mcp add mac-computer-use -- "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp              # GitHub Copilot CLI
+muse mcp add mac-computer-use --user -- "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp          # Muse Code
+amp mcp add mac-computer-use -- "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp                  # Amp
 ```
 
-Cursor (`~/.cursor/mcp.json`), Claude Desktop, Windsurf, Zed, Cline and similar clients take this config:
+OpenCode (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mac-computer-use": {
+      "type": "local",
+      "command": ["/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Cursor (`~/.cursor/mcp.json`), Claude Desktop, Windsurf, Zed, Cline, Kiro, Goose and similar clients take this config:
 
 ```json
 {
