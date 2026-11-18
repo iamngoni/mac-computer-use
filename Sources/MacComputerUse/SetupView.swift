@@ -27,6 +27,7 @@ final class SetupModel: ObservableObject {
     @Published var voiceID = CompanionPreferences.voiceIdentifier ?? ""
     @Published var speechRate = CompanionPreferences.speechRate
     @Published var showPersonalize = false
+    var openVoiceSettings: () -> Void = {}
     let voices = availableSpeechVoices()
     @Published var copiedClient: SupportedMCPClient?
     @Published var errorMessage: String?
@@ -216,6 +217,7 @@ final class SetupModel: ObservableObject {
 
     func setVoice(_ id: String) {
         CompanionPreferences.voiceIdentifier = id.isEmpty ? nil : id
+        CompanionPreferences.autoBestMacVoice = id.isEmpty
         voiceID = id
         host?.previewVoice()
     }
@@ -788,14 +790,9 @@ struct PersonalizePanel: View {
             }
             HStack(spacing: 10) {
                 Text("Voice").frame(width: 64, alignment: .leading).foregroundStyle(.secondary)
-                Picker("", selection: Binding(get: { model.voiceID }, set: { model.setVoice($0) })) {
-                    Text("System default").tag("")
-                    ForEach(model.voices, id: \.id) { voice in
-                        Text("\(voice.name) · \(voice.language)").tag(voice.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 220)
+                Text(currentVoiceSummary()).lineLimit(1).frame(width: 150, alignment: .leading)
+                Button("Change…", action: model.openVoiceSettings)
+                    .frame(width: 62, alignment: .leading)
                 Text("Speed").foregroundStyle(.secondary)
                 Slider(value: Binding(get: { model.speechRate }, set: { model.setSpeechRate($0) }), in: 0.5...1.5, step: 0.1) { editing in
                     if !editing { model.previewVoice() }

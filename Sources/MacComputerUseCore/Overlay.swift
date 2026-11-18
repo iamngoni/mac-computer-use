@@ -170,6 +170,21 @@ func makeAutomationStatusImage(
     return image
 }
 
+/// "Voice…" with the voice in use right-aligned and dimmed.
+func voiceMenuTitle(summary: String) -> NSAttributedString {
+    let font = NSFont.menuFont(ofSize: 0)
+    let style = NSMutableParagraphStyle()
+    let width = ("Voice…    " + summary as NSString).size(withAttributes: [.font: font]).width + 24
+    style.tabStops = [NSTextTab(textAlignment: .right, location: max(220, width))]
+    let title = NSMutableAttributedString(string: "Voice…\t", attributes: [.font: font, .paragraphStyle: style])
+    title.append(NSAttributedString(string: summary, attributes: [
+        .font: font,
+        .paragraphStyle: style,
+        .foregroundColor: NSColor.secondaryLabelColor,
+    ]))
+    return title
+}
+
 public struct AutomationStatusBarActions {
     public let version: String
     public let setup: () -> Void
@@ -184,6 +199,7 @@ public struct AutomationStatusBarActions {
     public let setAgentPreviewEnabled: (Bool) -> Void
     public let voiceEnabled: () -> Bool
     public let setVoiceEnabled: (Bool) -> Void
+    public let openVoiceSettings: () -> Void
     public let tours: () -> [(name: String, title: String)]
     public let playTour: (String) -> Void
     public let openToursFolder: () -> Void
@@ -203,6 +219,7 @@ public struct AutomationStatusBarActions {
         setAgentPreviewEnabled: @escaping (Bool) -> Void = { _ in },
         voiceEnabled: @escaping () -> Bool = { false },
         setVoiceEnabled: @escaping (Bool) -> Void = { _ in },
+        openVoiceSettings: @escaping () -> Void = {},
         tours: @escaping () -> [(name: String, title: String)] = { [] },
         playTour: @escaping (String) -> Void = { _ in },
         openToursFolder: @escaping () -> Void = {},
@@ -221,6 +238,7 @@ public struct AutomationStatusBarActions {
         self.setAgentPreviewEnabled = setAgentPreviewEnabled
         self.voiceEnabled = voiceEnabled
         self.setVoiceEnabled = setVoiceEnabled
+        self.openVoiceSettings = openVoiceSettings
         self.tours = tours
         self.playTour = playTour
         self.openToursFolder = openToursFolder
@@ -373,6 +391,14 @@ final class AutomationStatusBarController {
             voice.target = self
             voice.state = actions.voiceEnabled() ? .on : .off
             menu.addItem(voice)
+            let voiceSettings = NSMenuItem(
+                title: "Voice…",
+                action: #selector(openVoiceSettings),
+                keyEquivalent: ""
+            )
+            voiceSettings.target = self
+            voiceSettings.attributedTitle = voiceMenuTitle(summary: currentVoiceSummary())
+            menu.addItem(voiceSettings)
 
             menu.addItem(.separator())
             let clientsHeading = NSMenuItem(title: "Connected clients", action: nil, keyEquivalent: "")
@@ -476,6 +502,9 @@ final class AutomationStatusBarController {
     @objc private func togglePreview() {
         guard let actions else { return }
         actions.setAgentPreviewEnabled(!actions.agentPreviewEnabled())
+    }
+    @objc private func openVoiceSettings() {
+        actions?.openVoiceSettings()
     }
     @objc private func toggleVoice() {
         guard let actions else { return }

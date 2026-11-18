@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
     name: "MacComputerUse",
     platforms: [
-        .macOS(.v13),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "MacComputerUseCore", targets: ["MacComputerUseCore"]),
@@ -15,9 +15,21 @@ let package = Package(
             url: "https://github.com/sparkle-project/Sparkle",
             exact: "2.9.6"
         ),
+        // Kokoro, the free on-device neural voice. Only its text-to-speech
+        // parts and text normalisation are compiled in.
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio",
+            exact: "0.18.3",
+            traits: ["TTS", "NemoTextProcessing"]
+        ),
     ],
     targets: [
-        .target(name: "MacComputerUseCore"),
+        .target(
+            name: "MacComputerUseCore",
+            dependencies: [
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ]
+        ),
         .executableTarget(
             name: "MacComputerUse",
             dependencies: [
@@ -30,5 +42,6 @@ let package = Package(
             dependencies: ["MacComputerUseCore"],
             path: "SwiftTests/MacComputerUseCoreTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

@@ -33,6 +33,55 @@ public enum CompanionPreferences {
         set { defaults.set(newValue, forKey: "voiceIdentifier") }
     }
 
+    /// Which engine speaks: the Mac's voices, Kokoro or ElevenLabs.
+    public static var voiceEngine: VoiceEngineKind {
+        get { defaults.string(forKey: "voiceEngine").flatMap(VoiceEngineKind.init(rawValue:)) ?? .mac }
+        set { defaults.set(newValue.rawValue, forKey: "voiceEngine") }
+    }
+
+    /// Use the best Mac voice installed instead of `voiceIdentifier`. On by
+    /// default, except for people who already picked a voice.
+    public static var autoBestMacVoice: Bool {
+        get { defaults.object(forKey: "autoBestMacVoice") as? Bool ?? (voiceIdentifier == nil) }
+        set { defaults.set(newValue, forKey: "autoBestMacVoice") }
+    }
+
+    public static var kokoroVoice: String {
+        get { KokoroCatalog.find(defaults.string(forKey: "kokoroVoice"))?.id ?? KokoroCatalog.defaultVoice }
+        set { defaults.set(newValue, forKey: "kokoroVoice") }
+    }
+
+    public static var elevenLabsVoiceID: String? {
+        get { defaults.string(forKey: "elevenLabsVoiceID") }
+        set { defaults.set(newValue, forKey: "elevenLabsVoiceID") }
+    }
+
+    public static var elevenLabsVoiceName: String? {
+        get { defaults.string(forKey: "elevenLabsVoiceName") }
+        set { defaults.set(newValue, forKey: "elevenLabsVoiceName") }
+    }
+
+    public static var elevenLabsModel: ElevenLabsModel {
+        get { defaults.string(forKey: "elevenLabsModel").flatMap(ElevenLabsModel.init(rawValue:)) ?? .flash }
+        set { defaults.set(newValue.rawValue, forKey: "elevenLabsModel") }
+    }
+
+    /// Speak in a Mac voice when ElevenLabs can't be reached.
+    public static var elevenLabsFallback: Bool {
+        get { defaults.object(forKey: "elevenLabsFallback") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "elevenLabsFallback") }
+    }
+
+    /// The account's voices from the last successful key check, so `say`
+    /// can list and match them without a network call.
+    public static var elevenLabsVoices: [ElevenLabsVoice] {
+        get {
+            guard let data = defaults.data(forKey: "elevenLabsVoices") else { return [] }
+            return (try? JSONDecoder().decode([ElevenLabsVoice].self, from: data)) ?? []
+        }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "elevenLabsVoices") }
+    }
+
     /// 0.5 to 1.5 times normal speaking speed.
     public static var speechRate: Double {
         get { clampedSpeechRate(defaults.object(forKey: "speechRate") as? Double ?? 1) }
@@ -79,9 +128,23 @@ public func findSpeechVoice(_ query: String?) -> AVSpeechSynthesisVoice? {
 
 /// Voices worth offering: one entry per name, best quality first.
 public func availableSpeechVoices() -> [(id: String, name: String, language: String)] {
+    availableSpeechVoiceDetails().map { ($0.id, $0.name, $0.language) }
+}
+
+/// A Mac voice for Settings, with its quality.
+public struct MacVoiceOption: Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let language: String
+    /// "Premium", "Enhanced" or nil.
+    public let quality: String?
+}
+
+public func availableSpeechVoiceDetails() -> [MacVoiceOption] {
     var seen = Set<String>()
     return AVSpeechSynthesisVoice.speechVoices()
+        .filter { !$0.voiceTraits.contains(.isNoveltyVoice) }
         .sorted { ($0.language, -$0.quality.rawValue, $0.name) < ($1.language, -$1.quality.rawValue, $1.name) }
         .filter { seen.insert($0.name + $0.language).inserted }
-        .map { ($0.identifier, $0.name, $0.language) }
+        .map { MacVoiceOption(id: $0.identifier, name: $0.name, language: $0.language, quality: speechVoiceQualityLabel($0)) }
 }

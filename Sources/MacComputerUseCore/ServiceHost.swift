@@ -1254,10 +1254,22 @@ public final class ServiceHost {
         }
     }
 
-    /// Speaks a short sample in the person's chosen voice and speed.
-    public func previewVoice() {
+    /// Speaks a short sample in the person's chosen voice and speed, even
+    /// when Speak Aloud is off, and reports when it ends.
+    public func previewVoice(
+        _ text: String = "Hi! This is how I'll sound when I talk you through things.",
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
         voice.stopAll()
-        voice.speak("Hi! This is how I'll sound when I talk you through things.")
+        let wasEnabled = voice.isEnabled
+        voice.isEnabled = { true }
+        voice.speak(text) { outcome in completion(outcome == .spoken) }
+        voice.isEnabled = wasEnabled
+    }
+
+    /// Silences a preview or any speech in progress.
+    public func stopSpeaking() {
+        voice.stopAll()
     }
 
     public var agentPreviewEnabled: Bool {

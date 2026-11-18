@@ -19,10 +19,14 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 - **Human brakes.** Esc pauses every agent until you resume from the menu bar, and interrupted actions return `[user_interrupted]` errors. Pressing something like Send, Delete or Buy first shows a 2-second countdown ring you can stop. Agents wait while you are actively using the same app.
 - **Agent preview.** When an agent works in a window you cannot see, a small live preview with its cursor floats in a corner.
 - **Walkthroughs.** `guide` shows a timeline bar with Back, Show again, Skip/Next and Stop; steps can advance on a click, a shortcut, an app switch or Next, and can wait for an app or window to open. Saved tours get the same timeline.
-- **Make it yours.** Setup → Personalize sets the cursor colour, size and trail, and the voice and speed agents speak in; `say` also takes `rate` and `voice` (`voice: "list"` lists them).
+- **Make it yours.** Setup → Personalize sets the cursor colour, size and trail and the speaking speed; `say` also takes `rate` and `voice` (`voice: "list"` lists the voices of the engine you chose).
 - **Coach mode.** `buddy` keeps the cursor beside yours with reactions and thinking dots, `watch_user` lets the agent see how your "now you try" went, `lasso_region` lets you circle something to ask about it, and `magnify` zooms into tiny UI live. Everything spoken aloud is captioned at the bottom of the screen, word by word.
 - **Live visuals.** `show_visual` lets an agent draw anything a browser engine can (animated diagrams, charts, 3D scenes, spotlights, small interactive widgets) right on your screen, pinned to the real UI it is explaining, and `update_visual` animates it in real time and reads back what you click.
-- **Voice.** `say` speaks to you in the Mac's own on-device voice, and `point_at`, `annotate`, `ask_user`, `wait_for_user` and `guide` take `speak` to read their text aloud (or say something else). Agents' speech queues instead of overlapping, Esc cuts it off, and **Speak Aloud** in the menu bar or setup mutes it; muted calls tell the agent you did not hear them.
+- **Choose the voice.** Menu bar → **Voice…** picks who speaks:
+  - **Mac voices** (free, offline): Apple's built-in voices. By default the best one installed for your language is used; Apple's Premium voices are a free download from Spoken Content settings.
+  - **Kokoro** (free, offline): an open neural model (Kokoro 82M, Apache-2.0) that runs on this Mac through [FluidAudio](https://github.com/FluidInference/FluidAudio). It is downloaded once (about 100 MB, into `~/Library/Application Support/Mac Computer Use/Voices/Kokoro`) and can be removed from the same window.
+  - **ElevenLabs** (your API key): the most lifelike voices. The key stays in your login Keychain. Only the words agents speak are sent to ElevenLabs, billed to your account; screen contents never are. If ElevenLabs can't be reached, a Mac voice speaks instead unless you turn that off.
+- **Voice.** `say` speaks to you in the voice you chose, and `point_at`, `annotate`, `ask_user`, `wait_for_user` and `guide` take `speak` to read their text aloud (or say something else). Agents' speech queues instead of overlapping, Esc cuts it off, and **Speak Aloud** in the menu bar or setup mutes it; muted calls tell the agent you did not hear them.
 - **Guided tours.** `guide` can save an element-based tour that you replay later from the menu bar, without an agent.
 - **One menu-bar manager.** One status item lists active apps and connected clients, and offers Pause/Resume Agents, Show Agent Preview, Guided Tours, Setup, updates and Quit. Quitting turns automation off until you open the app again.
 - **Native setup.** Opening the app shows permission status, one-click registration for Codex and Claude Code, copyable fallback commands, and a launch-at-login switch.
@@ -75,7 +79,7 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 | `pick_element` | Capture the user's click(s) and return the app, element and, when it is in the last snapshot, its `element_index`. |
 | `wait_for_user` | Hand a step to the user (password, 2FA, permission dialog) and wait for a click or value change. Secure fields are watched by length only. |
 | `guide` | Walk the user through steps that advance when they click each element. `save_as` keeps the tour for replay from the menu bar. |
-| `say` | Say a sentence aloud in the Mac's own voice (on-device). Waits until it finishes unless `wait: false`; returns `[voice_muted]` when the user turned Speak Aloud off. |
+| `say` | Say a sentence aloud in the voice chosen in Voice settings (Mac voices, Kokoro or ElevenLabs). Waits until it finishes unless `wait: false`; returns `[voice_muted]` when the user turned Speak Aloud off. |
 | `health_report` | Return JSON diagnostics for permissions (and which app they are attributed to), process and service session, overlay, input policy, and app/window discovery. |
 
 ### Click methods
@@ -159,7 +163,7 @@ keychain anchor that protects client approvals. Without such an identity, or wit
 build is ad-hoc signed and macOS asks for permissions again after each rebuild.
 Every build uses the hardened runtime, so `DYLD_*` injection is ignored. Ad-hoc builds relax only library
 validation, because ad-hoc code has no Team ID to match the bundled Sparkle framework.
-The version comes from `VERSION`; the executable and `Info.plist` both target macOS 13 or later. Local builds intentionally omit the Sparkle feed and public key, so they never contact the release channel.
+The version comes from `VERSION`; the executable and `Info.plist` both target macOS 14 or later. Local builds intentionally omit the Sparkle feed and public key, so they never contact the release channel.
 
 ## Test
 
@@ -201,7 +205,7 @@ Only `Signed release` has write permissions or signing secrets; the compile and 
 Grant these to **MacComputerUse.app** in *System Settings → Privacy & Security*. Clients do not need them; Mac Computer Use asks you once before each client app may act:
 
 - **Accessibility**: read the user interface tree and synthesize app-scoped input
-- **Screen Recording**: capture window screenshots through ScreenCaptureKit on macOS 14 or later, with a `screencapture` fallback on older systems; desktop capture requires macOS 14 or later
+- **Screen Recording**: capture window and desktop screenshots through ScreenCaptureKit, falling back to `screencapture` if it fails
 - **Input Monitoring / Accessibility**: desktop control posts only after the caller explicitly supplies `allow_global_input: true`; macOS may require the app's Accessibility/Input Monitoring permission for global HID delivery
 - **Automation**: script Safari or Chromium for `navigate`; macOS grants this permission per target app
 

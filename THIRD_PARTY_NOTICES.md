@@ -10,6 +10,20 @@ Signed release builds bundle Sparkle 2 for secure application updates.
 The complete upstream license and its external-component notices are packaged at
 `MacComputerUse.app/Contents/Resources/Licenses/Sparkle-LICENSE.txt`.
 
+## FluidAudio and Kokoro
+
+The optional Kokoro voice runs through FluidAudio, which is compiled in with its
+text-to-speech parts and the NeMo text-normalisation engine (text-processing-rs).
+The Kokoro 82M model is not bundled: it is downloaded from Hugging Face
+(FluidInference/kokoro-82m-coreml) only when the person chooses Kokoro in Voice settings.
+
+- FluidAudio: https://github.com/FluidInference/FluidAudio (Apache-2.0)
+- text-processing-rs: https://github.com/FluidInference/text-processing-rs (Apache-2.0)
+- Kokoro 82M: https://huggingface.co/hexgrad/Kokoro-82M (Apache-2.0)
+
+FluidAudio's license is packaged at
+`MacComputerUse.app/Contents/Resources/Licenses/FluidAudio-LICENSE.txt`.
+
 ## Cua Driver
 
 The `sky_click` event recipe and the private SkyLight bridge in `main.swift` are derived
