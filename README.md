@@ -225,6 +225,26 @@ codex mcp add mac-computer-use -- \
   "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
 ```
 
+Any other MCP client works the same way: it is a stdio server started with `mcp`. Gemini CLI:
+
+```bash
+gemini mcp add --scope user mac-computer-use \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp
+```
+
+Cursor (`~/.cursor/mcp.json`), Claude Desktop, Windsurf, Zed, Cline and similar clients take this config:
+
+```json
+{
+  "mcpServers": {
+    "mac-computer-use": {
+      "command": "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 > Note: macOS reserves the server name `computer-use` for the built-in engine, so register this under a distinct name (e.g. `mac-computer-use`).
 
 ### Typical flow
