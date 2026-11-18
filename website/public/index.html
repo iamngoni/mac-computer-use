@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mac Computer Use — let AI agents use your Mac, safely</title>
+<meta name="description" content="Mac Computer Use is a free, open-source macOS app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use Mac apps in the background, without moving your pointer. Esc stops everything.">
+<link rel="canonical" href="https://mcu.iamngoni.dev/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="author" content="Ngonidzashe Mangudya">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f6f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151618" media="(prefers-color-scheme: dark)">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Mac Computer Use">
+<meta property="og:url" content="https://mcu.iamngoni.dev/">
+<meta property="og:title" content="Mac Computer Use">
+<meta property="og:description" content="Let AI agents use your Mac without taking it from you. Free and open source.">
+<meta property="og:image" content="https://mcu.iamngoni.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Mac Computer Use: the agent cursor working in a Mac window">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Mac Computer Use">
+<meta name="twitter:description" content="Let AI agents use your Mac without taking it from you.">
+<meta name="twitter:image" content="https://mcu.iamngoni.dev/og.png">
+
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "Mac Computer Use",
+      "url": "https://mcu.iamngoni.dev/",
+      "downloadUrl": "https://mcu.iamngoni.dev/download",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS 13 or later",
+      "description": "A native macOS app that lets AI agents see and use Mac apps over the Model Context Protocol (MCP).",
+      "image": "https://mcu.iamngoni.dev/icon-512.png",
+      "screenshot": "https://mcu.iamngoni.dev/og.png",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "author": { "@type": "Person", "name": "Ngonidzashe Mangudya", "url": "https://github.com/iamngoni" },
+      "codeRepository": "https://github.com/iamngoni/mac-computer-use"
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "Does it move my mouse?", "acceptedAnswer": { "@type": "Answer", "text": "No. Clicks, scrolling and dragging go to a checked app and window without moving your pointer. The agent's cursor is drawn separately." } },
+        { "@type": "Question", "name": "Which permissions does it need?", "acceptedAnswer": { "@type": "Answer", "text": "Accessibility and Screen Recording, granted once to Mac Computer Use. Claude Code, Codex, Cursor and other clients never need them; the app asks you once per client before it may act." } },
+        { "@type": "Question", "name": "How do I stop an agent?", "acceptedAnswer": { "@type": "Answer", "text": "Press Esc. Every agent pauses until you resume from the menu bar. Quitting the app turns automation off." } },
+        { "@type": "Question", "name": "Is it free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is open source with no account or login, and signed releases update themselves." } },
+        { "@type": "Question", "name": "Which Macs does it run on?", "acceptedAnswer": { "@type": "Answer", "text": "macOS 13 Ventura or later, on Apple silicon and Intel. Whole-desktop capture needs macOS 14." } }
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top page">
+  <a class="brand" href="/"><img src="/icon-512.png" alt="" width="22" height="22">Mac Computer Use</a>
+  <nav aria-label="Primary">
+    <a href="#how">How it works</a>
+    <a href="#tools">Tools</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/iamngoni/mac-computer-use" rel="noopener">GitHub</a>
+    <a href="/download" class="nav-dl">Download</a>
+  </nav>
+</header>
+
+<main id="main">
+  <section class="hero page">
+    <div class="hero-text">
+      <h1>Let your agent use your Mac, without taking it from&nbsp;you.</h1>
+      <p class="lede">Mac Computer Use is a small Mac app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use your apps. It works in the background, leaves your pointer alone, and stops the moment you press <kbd>esc</kbd>.</p>
+      <div class="dl">
+        <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
+        <p class="dl-meta"><span data-version>Latest version</span> · Apple silicon and Intel · macOS 13 or later<span data-size></span> · <a class="ink" href="/download/zip">ZIP</a></p>
+      </div>
+    </div>
+    <p class="aside">Below is a sketch of an agent at work, drawn in your browser with the app's own cursor. Your pointer is yours the whole time.</p>
+  </section>
+
+  <section class="page" aria-label="Demo">
+    <figure class="sketch" id="sketch">
+      <div class="desk" id="desk">
+        <div class="win notes" id="notes">
+          <div class="bar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="notes-in">
+            <aside>
+              <p class="sel">Release day</p>
+              <p>Groceries</p>
+              <p>Ideas</p>
+            </aside>
+            <article>
+              <h2>Release day</h2>
+              <label class="task"><span class="box" id="t1"></span>Write the release notes</label>
+              <label class="task"><span class="box" id="t2"></span>Tag 0.10.1</label>
+              <label class="task"><span class="box" id="t3"></span>Publish the release</label>
+              <p class="typed"><span id="typed"></span><i class="caret"></i></p>
+            </article>
+          </div>
+        </div>
+        <div class="win web" id="web">
+          <div class="bar"><i></i><i></i><i></i><span class="url" id="url">github.com</span></div>
+          <div class="web-in">
+            <p class="crumbs">iamngoni / mac-computer-use</p>
+            <h3>Releases</h3>
+            <div class="rel">
+              <p><b>v0.10.1</b> <span class="draft" id="draft">Draft</span></p>
+              <p class="muted">Resolve windows through focused AX references.</p>
+              <button type="button" class="publish" id="publish" tabindex="-1">Publish release</button>
+            </div>
+          </div>
+        </div>
+        <svg class="ink-layer" id="inkLayer" aria-hidden="true"><path id="inkPath"/></svg>
+        <div class="bubble" id="bubble"></div>
+        <div class="ask" id="ask"><p>Publish v0.10.1 now?</p><div><span class="chip yes" id="askYes">Publish</span><span class="chip">Not yet</span></div></div>
+        <div class="you" id="you" aria-hidden="true"></div>
+        <canvas class="trail" id="trail" aria-hidden="true"></canvas>
+        <div class="ring" id="ring"></div>
+        <img class="agent" id="agent" src="/cursor.png" alt="" width="28" height="28">
+      </div>
+      <div class="log" aria-hidden="true">
+        <p class="log-head">claude · mac-computer-use</p>
+        <ol id="log"></ol>
+      </div>
+    </figure>
+    <figcaption class="cap"><span>A sketch of what an agent does with Mac Computer Use. Your own pointer, top right, never moves.</span><button type="button" class="replay" id="replay">Replay</button></figcaption>
+  </section>
+
+  <section class="page statement">
+    <p><b>Mac Computer Use gives an agent eyes and hands on your Mac,</b> through the same Accessibility interface that screen readers use. <b>It works beside you, not instead of you:</b> clicks go to the right window in the background, and your pointer stays where you left it. <b>Every window is checked before anything happens,</b> so an agent can't click into the wrong app. <b>And you're always in charge:</b> risky buttons wait two seconds for you, and Esc stops every agent at once.</p>
+  </section>
+
+  <section class="page points" id="how">
+    <article>
+      <h3>Background, not takeover</h3>
+      <p>Clicks use the app's own Accessibility actions where possible. Typing, scrolling and dragging go to one checked window. You keep working in another.</p>
+    </article>
+    <article>
+      <h3>Permissions, once</h3>
+      <p>You grant Accessibility and Screen Recording to Mac Computer Use, not to every agent. The first time a new client tries to act, the app asks you, and it remembers that client by its code signature.</p>
+    </article>
+    <article>
+      <h3>An agent you can see</h3>
+      <p>Its cursor flies to each target before acting. It can point at things, draw on screen, ask you a question, or hand you a password step and wait.</p>
+    </article>
+    <article>
+      <h3>Stops when you say so</h3>
+      <p><kbd>esc</kbd> pauses every agent. Send, Delete and Buy get a two-second countdown you can cancel. Agents wait while you're using the same app.</p>
+    </article>
+  </section>
+
+  <section class="page setup">
+    <h2>Set up in a few minutes.</h2>
+    <ol class="steps">
+      <li><span class="n">1</span><div><h3>Install</h3><p>Open the DMG and drag Mac Computer Use into Applications. It lives in the menu bar and updates itself between tool calls.</p></div></li>
+      <li><span class="n">2</span><div><h3>Grant two permissions</h3><p>The setup window shows whether Accessibility and Screen Recording are on, and opens the right System Settings pane for each.</p></div></li>
+      <li><span class="n">3</span><div><h3>Connect your agent</h3><p>Setup registers Claude Code or Codex with one click. It speaks plain MCP over stdio, so any agent that takes an MCP server works too:</p>
+        <div class="agents" role="tablist" aria-label="Agent">
+        <button type="button" role="tab" id="tab-claude" aria-controls="pane-claude" aria-selected="true">Claude Code</button>
+        <button type="button" role="tab" id="tab-codex" aria-controls="pane-codex" aria-selected="false" tabindex="-1">Codex</button>
+        <button type="button" role="tab" id="tab-opencode" aria-controls="pane-opencode" aria-selected="false" tabindex="-1">OpenCode</button>
+        <button type="button" role="tab" id="tab-cursor" aria-controls="pane-cursor" aria-selected="false" tabindex="-1">Cursor</button>
+        <button type="button" role="tab" id="tab-gemini" aria-controls="pane-gemini" aria-selected="false" tabindex="-1">Gemini CLI</button>
+        <button type="button" role="tab" id="tab-copilot" aria-controls="pane-copilot" aria-selected="false" tabindex="-1">Copilot CLI</button>
+        <button type="button" role="tab" id="tab-muse" aria-controls="pane-muse" aria-selected="false" tabindex="-1">Muse Code</button>
+        <button type="button" role="tab" id="tab-amp" aria-controls="pane-amp" aria-selected="false" tabindex="-1">Amp</button>
+        <button type="button" role="tab" id="tab-vscode" aria-controls="pane-vscode" aria-selected="false" tabindex="-1">VS Code</button>
+        <button type="button" role="tab" id="tab-other" aria-controls="pane-other" aria-selected="false" tabindex="-1">Any MCP client</button>
+        </div>
+        <div class="pane" role="tabpanel" id="pane-claude" aria-labelledby="tab-claude"><div class="code"><pre><code>claude mcp add --scope user mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="claude mcp add --scope user mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-codex" aria-labelledby="tab-codex" hidden><div class="code"><pre><code>codex mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="codex mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-opencode" aria-labelledby="tab-opencode" hidden><p class="pane-note">Add to <code>~/.config/opencode/opencode.json</code>, or run <code>opencode mcp add</code> and pick a local server.</p><div class="code"><pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mac-computer-use": {
+      "type": "local",
+      "command": ["/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use", "mcp"],
+      "enabled": true
+    }
+  }
+}</code></pre><button type="button" class="copy" data-copy="{
+  &quot;$schema&quot;: &quot;https://opencode.ai/config.json&quot;,
+  &quot;mcp&quot;: {
+    &quot;mac-computer-use&quot;: {
+      &quot;type&quot;: &quot;local&quot;,
+      &quot;command&quot;: [&quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;, &quot;mcp&quot;],
+      &quot;enabled&quot;: true
+    }
+  }
+}">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-cursor" aria-labelledby="tab-cursor" hidden><p class="pane-note">Add to <code>~/.cursor/mcp.json</code>, then turn it on under Settings → MCP.</p><div class="code"><pre><code>{
+  "mcpServers": {
+    "mac-computer-use": {
+      "command": "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use",
+      "args": ["mcp"]
+    }
+  }
+}</code></pre><button type="button" class="copy" data-copy="{
+  &quot;mcpServers&quot;: {
+    &quot;mac-computer-use&quot;: {
+      &quot;command&quot;: &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;,
+      &quot;args&quot;: [&quot;mcp&quot;]
+    }
+  }
+}">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-gemini" aria-labelledby="tab-gemini" hidden><div class="code"><pre><code>gemini mcp add --scope user mac-computer-use \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="gemini mcp add --scope user mac-computer-use &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-copilot" aria-labelledby="tab-copilot" hidden><div class="code"><pre><code>copilot mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="copilot mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-muse" aria-labelledby="tab-muse" hidden><div class="code"><pre><code>muse mcp add mac-computer-use --user -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="muse mcp add mac-computer-use --user -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-amp" aria-labelledby="tab-amp" hidden><div class="code"><pre><code>amp mcp add mac-computer-use -- \
+  "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use" mcp</code></pre><button type="button" class="copy" data-copy="amp mcp add mac-computer-use -- &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot; mcp">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-vscode" aria-labelledby="tab-vscode" hidden><p class="pane-note">Then use it from Copilot Chat in agent mode.</p><div class="code"><pre><code>code --add-mcp '{"name":"mac-computer-use","command":"/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use","args":["mcp"]}'</code></pre><button type="button" class="copy" data-copy="code --add-mcp &#x27;{&quot;name&quot;:&quot;mac-computer-use&quot;,&quot;command&quot;:&quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;,&quot;args&quot;:[&quot;mcp&quot;]}&#x27;">Copy</button></div></div>
+        <div class="pane" role="tabpanel" id="pane-other" aria-labelledby="tab-other" hidden><p class="pane-note">Claude Desktop, Windsurf, Zed, Cline, Kiro, Goose and other clients take this stdio server config.</p><div class="code"><pre><code>{
+  "mcpServers": {
+    "mac-computer-use": {
+      "command": "/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use",
+      "args": ["mcp"]
+    }
+  }
+}</code></pre><button type="button" class="copy" data-copy="{
+  &quot;mcpServers&quot;: {
+    &quot;mac-computer-use&quot;: {
+      &quot;command&quot;: &quot;/Applications/MacComputerUse.app/Contents/MacOS/mac-computer-use&quot;,
+      &quot;args&quot;: [&quot;mcp&quot;]
+    }
+  }
+}">Copy</button></div></div>
+      </div></li>
+    </ol>
+  </section>
+
+  <section class="page tools" id="tools">
+    <h2>37 tools.</h2>
+    <p class="sub">What an agent can do once it's connected.</p>
+    <div class="tool-cols">
+      <dl>
+        <dt>See</dt>
+        <dd><code>get_app_state</code> A window's screenshot plus a numbered list of its buttons, fields and text.</dd>
+        <dd><code>list_apps</code> <code>list_windows</code> What's running, and each window's exact ID.</dd>
+        <dd><code>get_desktop_state</code> The whole screen, on macOS 14 and later.</dd>
+        <dd><code>verify_state</code> Wait until something appears or goes away.</dd>
+      </dl>
+      <dl>
+        <dt>Act</dt>
+        <dd><code>click</code> <code>type_text</code> <code>press_key</code> <code>scroll</code> <code>drag</code> In the background, by element or by position.</dd>
+        <dd><code>set_value</code> <code>select_text</code> <code>invoke_menu</code> Direct, without hunting for pixels.</dd>
+        <dd><code>open_app</code> <code>navigate</code> <code>set_window_frame</code> Open apps, go to URLs, move windows.</dd>
+      </dl>
+      <dl>
+        <dt>Show and ask</dt>
+        <dd><code>point_at</code> <code>annotate</code> <code>show_visual</code> Point, draw, or put a live chart next to the thing it explains.</dd>
+        <dd><code>ask_user</code> <code>suggest</code> <code>pick_element</code> Questions only your click can answer.</dd>
+        <dd><code>guide</code> <code>say</code> <code>magnify</code> Walkthroughs, spoken words with captions, a zoom lens.</dd>
+      </dl>
+      <dl>
+        <dt>Hand over</dt>
+        <dd><code>wait_for_user</code> Give you the 2FA or password step and wait.</dd>
+        <dd><code>watch_user</code> Watch your "now you try" step; never records what you type.</dd>
+        <dd><code>job</code> A card with progress, Pause and Stop for long tasks.</dd>
+        <dd><code>health_report</code> Permissions and status as JSON.</dd>
+      </dl>
+    </div>
+    <p class="sub"><a class="ink" href="https://github.com/iamngoni/mac-computer-use#tools" rel="noopener">The full list, with every option</a></p>
+  </section>
+
+  <section class="page faq" id="faq">
+    <h2>Questions</h2>
+    <details><summary>Does it move my mouse?</summary><p>No. Clicks, scrolling and dragging go to a checked app and window without moving your pointer. The agent's cursor is drawn separately. Agents can control the whole desktop only when they ask for it explicitly with <code>allow_global_input</code>.</p></details>
+    <details><summary>Which permissions does it need?</summary><p>Accessibility and Screen Recording, granted once to Mac Computer Use. Claude Code, Codex, Cursor and other clients never need them. The app asks you once per client before it may act.</p></details>
+    <details><summary>How do I stop an agent?</summary><p>Press <kbd>esc</kbd>. Every agent pauses until you resume from the menu bar, and the interrupted action reports that you stopped it. Quitting the app turns automation off.</p></details>
+    <details><summary>Is it free?</summary><p>Yes. It's open source, needs no account, and signed releases update themselves.</p></details>
+    <details><summary>Which Macs does it run on?</summary><p>macOS 13 Ventura or later, on Apple silicon and Intel. Whole-desktop capture needs macOS 14.</p></details>
+  </section>
+
+  <section class="page end">
+    <img src="/cursor.png" alt="" width="28" height="28">
+    <h2>Hand your agent the Mac.</h2>
+    <p>It's free, works offline, and updates itself.</p>
+    <div class="dl">
+      <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
+      <p class="dl-meta"><span data-version>Latest version</span> · <a class="ink" data-notes href="https://github.com/iamngoni/mac-computer-use/releases">Release notes</a></p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot page">
+  <p><img src="/icon-512.png" alt="" width="16" height="16"> Mac Computer Use is free, open-source software by <a class="ink" href="https://github.com/iamngoni" rel="noopener">Ngonidzashe Mangudya</a>.</p>
+  <nav aria-label="Footer"><a href="/download">Download</a><a href="https://github.com/iamngoni/mac-computer-use/releases" rel="noopener">Releases</a><a href="https://github.com/iamngoni/mac-computer-use" rel="noopener">Source code</a></nav>
+</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
