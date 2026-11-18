@@ -44,7 +44,7 @@
       "url": "https://mcu.iamngoni.dev/",
       "downloadUrl": "https://mcu.iamngoni.dev/download",
       "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "macOS 13 or later",
+      "operatingSystem": "macOS 14 or later",
       "description": "A native macOS app that lets AI agents see and use Mac apps over the Model Context Protocol (MCP).",
       "image": "https://mcu.iamngoni.dev/icon-512.png",
       "screenshot": "https://mcu.iamngoni.dev/og.png",
@@ -60,7 +60,7 @@
         { "@type": "Question", "name": "Which permissions does it need?", "acceptedAnswer": { "@type": "Answer", "text": "Accessibility and Screen Recording, granted once to Mac Computer Use. Claude Code, Codex, Cursor and other clients never need them; the app asks you once per client before it may act." } },
         { "@type": "Question", "name": "How do I stop an agent?", "acceptedAnswer": { "@type": "Answer", "text": "Press Esc. Every agent pauses until you resume from the menu bar. Quitting the app turns automation off." } },
         { "@type": "Question", "name": "Is it free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is open source with no account or login, and signed releases update themselves." } },
-        { "@type": "Question", "name": "Which Macs does it run on?", "acceptedAnswer": { "@type": "Answer", "text": "macOS 13 Ventura or later, on Apple silicon and Intel. Whole-desktop capture needs macOS 14." } }
+        { "@type": "Question", "name": "Which Macs does it run on?", "acceptedAnswer": { "@type": "Answer", "text": "macOS 14 Sonoma or later, on Apple silicon and Intel." } }
       ]
     }
   ]
@@ -88,7 +88,7 @@
       <p class="lede">Mac Computer Use is a small Mac app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use your apps. It works in the background, leaves your pointer alone, and stops the moment you press <kbd>esc</kbd>.</p>
       <div class="dl">
         <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
-        <p class="dl-meta"><span data-version>Latest version</span> · Apple silicon and Intel · macOS 13 or later<span data-size></span> · <a class="ink" href="/download/zip">ZIP</a></p>
+        <p class="dl-meta"><span data-version>Latest version</span> · Apple silicon and Intel · macOS 14 or later<span data-size></span> · <a class="ink" href="/download/zip">ZIP</a></p>
       </div>
     </div>
     <p class="aside">Below is a sketch of an agent at work, drawn in your browser with the app's own cursor. Your pointer is yours the whole time.</p>
@@ -257,7 +257,7 @@
         <dt>See</dt>
         <dd><code>get_app_state</code> A window's screenshot plus a numbered list of its buttons, fields and text.</dd>
         <dd><code>list_apps</code> <code>list_windows</code> What's running, and each window's exact ID.</dd>
-        <dd><code>get_desktop_state</code> The whole screen, on macOS 14 and later.</dd>
+        <dd><code>get_desktop_state</code> The whole screen.</dd>
         <dd><code>verify_state</code> Wait until something appears or goes away.</dd>
       </dl>
       <dl>
@@ -289,7 +289,8 @@
     <details><summary>Which permissions does it need?</summary><p>Accessibility and Screen Recording, granted once to Mac Computer Use. Claude Code, Codex, Cursor and other clients never need them. The app asks you once per client before it may act.</p></details>
     <details><summary>How do I stop an agent?</summary><p>Press <kbd>esc</kbd>. Every agent pauses until you resume from the menu bar, and the interrupted action reports that you stopped it. Quitting the app turns automation off.</p></details>
     <details><summary>Is it free?</summary><p>Yes. It's open source, needs no account, and signed releases update themselves.</p></details>
-    <details><summary>Which Macs does it run on?</summary><p>macOS 13 Ventura or later, on Apple silicon and Intel. Whole-desktop capture needs macOS 14.</p></details>
+    <details><summary>Which Macs does it run on?</summary><p>macOS 14 Sonoma or later, on Apple silicon and Intel.</p></details>
+    <details><summary>What does the voice sound like?</summary><p>You choose under Voice… in the menu bar: Apple’s built-in Mac voices, Kokoro (a free neural voice that runs on your Mac, about 100 MB), or ElevenLabs with your own API key. Kokoro and the Mac voices never leave your Mac.</p></details>
   </section>
 
   <section class="page end">
