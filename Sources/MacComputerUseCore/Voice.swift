@@ -279,9 +279,7 @@ final class ServiceVoice: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         case .elevenlabs:
             guard let key = ElevenLabsKey.read(), !key.isEmpty else { throw VoiceEngineError.missingKey }
             let voices = CompanionPreferences.elevenLabsVoices
-            let named = voice.flatMap { query in
-                voices.first { $0.id == query || $0.name.caseInsensitiveCompare(query) == .orderedSame }
-            }
+            let named = ElevenLabsVoice.find(voice, in: voices)
             let voiceID = named?.id ?? CompanionPreferences.elevenLabsVoiceID ?? ElevenLabsClient.fallbackVoiceID
             return try await ElevenLabsClient().render(
                 text,
