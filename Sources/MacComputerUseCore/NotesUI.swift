@@ -108,9 +108,8 @@ final class NoteComposer: NSObject, NSTextFieldDelegate {
     }
 }
 
-/// Click-through markers for notes that are still open. A pin follows its
-/// window when the window moves and hides while the window is off screen.
-/// Resolving a note shows the agent's reply beside the pin for a while.
+/// Short-lived, click-through confirmations beside a note's region: "saved"
+/// when the person leaves a note, the agent's reply when it is resolved.
 @MainActor
 final class NotePins {
     private final class Pin {
@@ -153,35 +152,18 @@ final class NotePins {
         return out
     }
 
-    /// Shows a pin for each unresolved note and drops pins for the rest.
-    func sync(_ notes: [ReviewNote]) {
-        let open = notes.filter { $0.status != .resolved }
-        let keep = Set(open.map(\.id))
-        for (id, pin) in pins where !keep.contains(id) && pin.removeAt == nil {
-            pin.panel.orderOut(nil)
-            pins.removeValue(forKey: id)
-        }
-        for (index, note) in open.enumerated() where pins[note.id] == nil {
-            pins[note.id] = makePin(note, number: index + 1)
-        }
-        for (index, note) in open.enumerated() {
-            pins[note.id]?.label.stringValue = note.status == .claimed ? "\(index + 1) ⋯" : "\(index + 1)"
-        }
-        refresh()
-        startTimer()
-    }
-
-    /// Shows the agent's reply beside the note's pin for a few seconds.
-    func showReply(_ note: ReviewNote) {
-        let pin = pins[note.id] ?? makePin(note, number: 0)
+    /// Briefly shows a message beside the note's region, then removes it.
+    /// Nothing stays on screen: open notes live in the agents' queue.
+    func flash(_ note: ReviewNote, text: String, color: NSColor, seconds: TimeInterval) {
+        pins[note.id]?.panel.orderOut(nil)
+        let pin = makePin(note, number: 0)
         pins[note.id] = pin
-        let text = "✓ " + (note.reply ?? "Done")
         pin.label.stringValue = text.count > 140 ? String(text.prefix(140)) + "…" : text
-        pin.label.backgroundColor = .systemGreen
+        pin.label.backgroundColor = color
         let size = pin.label.sizeThatFits(NSSize(width: 320, height: 200))
         pin.panel.setContentSize(NSSize(width: min(max(size.width + 16, 28), 340), height: max(size.height + 8, 24)))
         pin.label.frame = NSRect(origin: .zero, size: pin.panel.frame.size)
-        pin.removeAt = Date().addingTimeInterval(8)
+        pin.removeAt = Date().addingTimeInterval(seconds)
         refresh()
         startTimer()
     }

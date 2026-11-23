@@ -20,7 +20,6 @@ final class ServiceNotes {
         self.store = store
         self.captureVisible = captureVisible
         pins = NotePins(captureVisible: captureVisible)
-        pins.sync(store.list())
     }
 
     var isComposing: Bool { lasso != nil || composer != nil }
@@ -80,6 +79,7 @@ final class ServiceNotes {
                         return
                     }
                     self.changed()
+                    self.pins.flash(note, text: "✓ Saved for your agents", color: accent, seconds: 1.5)
                     if case .saveAndAnother = outcome {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                             MainActor.assumeIsolated { self.leaveFeedback() }
@@ -109,7 +109,6 @@ final class ServiceNotes {
     }
 
     private func changed() {
-        pins.sync(store.list(NoteFilter.everything))
         broadcast?(["type": "notes_changed", "open": store.openCount])
         onChange?()
     }
@@ -163,7 +162,7 @@ final class ServiceNotes {
             do {
                 let note = try store.resolve(id, status: status, reply: reply_, by: label, afterImage: after)
                 reply(["outcome": "ok", "note": noteWire(note)])
-                if status == .resolved { pins.showReply(note) }
+                if status == .resolved { pins.flash(note, text: "✓ " + (note.reply ?? "Done"), color: .systemGreen, seconds: 8) }
                 changed()
             } catch { reply(failure(error)) }
         case "notes_count":

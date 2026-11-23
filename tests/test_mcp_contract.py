@@ -81,7 +81,7 @@ class MCPContractTests(unittest.TestCase):
     def test_server_metadata_and_tools(self) -> None:
         initialized = self.client.initialize_response["result"]
         self.assertEqual("mac-computer-use", initialized["serverInfo"]["name"])
-        self.assertEqual("0.12.0", initialized["serverInfo"]["version"])
+        self.assertEqual("0.12.1", initialized["serverInfo"]["version"])
 
         response = self.client.request("tools/list", {})
         names = [tool["name"] for tool in response["result"]["tools"]]
@@ -180,7 +180,7 @@ class MCPContractTests(unittest.TestCase):
         self.assertEqual(
             "com.modestnerd.mac-computer-use", report["bundle"]["identifier"]
         )
-        self.assertEqual("0.12.0", report["bundle"]["version"])
+        self.assertEqual("0.12.1", report["bundle"]["version"])
         self.assertIsInstance(report["overlay"]["launch_requested"], bool)
         self.assertIsInstance(report["overlay"]["state_file_present"], bool)
         self.assertEqual("not_requested", report["overlay"]["status"])
