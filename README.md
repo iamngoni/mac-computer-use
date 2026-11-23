@@ -20,6 +20,8 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 - **Agent preview.** When an agent works in a window you cannot see, a small live preview with its cursor floats in a corner.
 - **Walkthroughs.** `guide` shows a timeline bar with Back, Show again, Skip/Next and Stop; steps can advance on a click, a shortcut, an app switch or Next, and can wait for an app or window to open. Saved tours get the same timeline.
 - **Make it yours.** Setup → Personalize sets the cursor colour, size and trail and the speaking speed; `say` also takes `rate` and `voice` (`voice: "list"` lists the voices of the engine you chose).
+- **Review notes.** Press ⌃⌥⌘N (or menu bar → Leave Feedback…), circle something and type or dictate a note. Notes stay pinned to their window. They are addressed to no agent: each note records the app, window, page URL, element and visible text it covers, so every agent filters for its own with `list_notes` (`url_prefix`, `app`, `text`, `acted_here_by_me`), claims it with `claim_note`, and replies in place with `resolve_note`. Tool results carry a `pending_notes` count while notes are open.
+- **Bring your own agent.** Menu bar → Review Notes → Send Review to… hands your open notes to your own agent over the [Agent Client Protocol](https://agentclientprotocol.com) (Gemini CLI, or Claude Code and Codex through their ACP adapters), with Mac Computer Use as its MCP server. Its progress shows on a job card and its permission requests come to you. No model is bundled; agents are listed in `~/Library/Application Support/MacComputerUse/agents.json`.
 - **Coach mode.** `buddy` keeps the cursor beside yours with reactions and thinking dots, `watch_user` lets the agent see how your "now you try" went, `lasso_region` lets you circle something to ask about it, and `magnify` zooms into tiny UI live. Everything spoken aloud is captioned at the bottom of the screen, word by word.
 - **Live visuals.** `show_visual` lets an agent draw anything a browser engine can (animated diagrams, charts, 3D scenes, spotlights, small interactive widgets) right on your screen, pinned to the real UI it is explaining, and `update_visual` animates it in real time and reads back what you click.
 - **Choose the voice.** Menu bar → **Voice…** picks who speaks:
@@ -80,6 +82,11 @@ You grant Accessibility and Screen Recording to **Mac Computer Use once**. Clien
 | `wait_for_user` | Hand a step to the user (password, 2FA, permission dialog) and wait for a click or value change. Secure fields are watched by length only. |
 | `guide` | Walk the user through steps that advance when they click each element. `save_as` keeps the tour for replay from the menu bar. |
 | `say` | Say a sentence aloud in the voice chosen in Voice settings (Mac voices, Kokoro or ElevenLabs). Waits until it finishes unless `wait: false`; returns `[voice_muted]` when the user turned Speak Aloud off. |
+| `list_notes` | The user's review notes, filtered by `url_prefix`, `app`, `window_title`, `text`, `acted_here_by_me`, `status`, `since`. One line each. |
+| `get_note` | One note in full: app, window, URL, element, nearby text, the user's words and an image of what was circled. |
+| `claim_note` | Mark a note as yours; only one agent can hold it. |
+| `resolve_note` | Reply to a note; the reply appears beside it and an after image is kept. `status: "open"` releases it. |
+| `wait_for_notes` | Wait for new matching notes while idle. |
 | `health_report` | Return JSON diagnostics for permissions (and which app they are attributed to), process and service session, overlay, input policy, and app/window discovery. |
 
 ### Click methods

@@ -46,6 +46,8 @@ final class WorkerSession: @unchecked Sendable {
     private var sessionInfo: [String: Any] = [:]
     private var nextRequestID = 1
     private var responses: [Int: [String: Any]] = [:]
+    private var openNotes = 0
+    private var notesVersion = 0
 
     var isAttached: Bool {
         condition.lock(); defer { condition.unlock() }
@@ -61,6 +63,37 @@ final class WorkerSession: @unchecked Sendable {
     var isVoiceEnabled: Bool {
         condition.lock(); defer { condition.unlock() }
         return voiceEnabled
+    }
+
+    /// Unresolved review notes, as last reported by the service.
+    var openNoteCount: Int {
+        condition.lock(); defer { condition.unlock() }
+        return openNotes
+    }
+
+    var noteChangeVersion: Int {
+        condition.lock(); defer { condition.unlock() }
+        return notesVersion
+    }
+
+    /// The session's client name and working directory, for claim labels.
+    var clientLabel: String {
+        condition.lock(); defer { condition.unlock() }
+        let client = sessionInfo["client"] as? [String: Any] ?? [:]
+        let name = (client["reported_name"] as? String) ?? (client["name"] as? String) ?? "agent"
+        let folder = (client["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+        let session = (sessionInfo["session_id"] as? String).map { String($0.prefix(4)) }
+        return [name, folder, session].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// Waits until the notes change after `version`, Esc, or the deadline.
+    func waitForNoteChange(after version: Int, until deadline: Date) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        while notesVersion == version {
+            if cancelFlag.value || Date() >= deadline { return false }
+            _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.2)))
+        }
+        return true
     }
 
     var overlayWindowIDs: [CGWindowID] {
@@ -124,6 +157,12 @@ final class WorkerSession: @unchecked Sendable {
             condition.lock(); paused = isPaused; condition.unlock()
             // Pausing stops the current action; resuming clears the brake.
             cancelFlag.set(isPaused)
+        case "notes_changed":
+            condition.lock()
+            openNotes = (message["open"] as? NSNumber)?.intValue ?? openNotes
+            notesVersion += 1
+            condition.broadcast()
+            condition.unlock()
         case "voice":
             let enabled = message["enabled"] as? Bool ?? true
             condition.lock(); voiceEnabled = enabled; condition.unlock()

@@ -11,3 +11,4 @@ __pycache__/
 
 # Temp capture/IPC files
 /tmp/maccu-*
+.mimocode/

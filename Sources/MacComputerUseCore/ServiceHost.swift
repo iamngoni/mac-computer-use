@@ -392,6 +392,9 @@ public final class ServiceHost {
     private var keyMonitors: [Any] = []
     private var refreshScheduled = false
     private var interactions: [ActiveInteraction] = []
+    private let notes: ServiceNotes
+    private let agentHost: ACPAgentHost
+    private var agentPermissionPrompt: ChoicePrompt?
     public private(set) var isPaused = false
     public var onChange: (() -> Void)?
     public private(set) var lastError: String?
@@ -415,10 +418,31 @@ public final class ServiceHost {
         }
         agentCam = presenter == nil ? nil : AgentCam(captureVisible: environment["MACCU_CAPTURE_OVERLAY"] == "1")
         voice = ServiceVoice(environment: environment)
+        notes = ServiceNotes(captureVisible: environment["MACCU_CAPTURE_OVERLAY"] == "1")
+        agentHost = ACPAgentHost(mcpCommand: executableURL.path)
+        notes.broadcast = { [weak self] message in self?.broadcast(message) }
+        notes.onChange = { [weak self] in self?.notifyChange() }
+        notes.onWindowsChanged = { [weak self] in self?.refreshExtraWindows() }
         presenter?.onWindowsChanged = { [weak self] identifiers in
             self?.broadcast(["type": "overlay_windows", "ids": identifiers.map { Int($0) }])
         }
         agentCam?.onWindowsChanged = { [weak self] in self?.refreshExtraWindows() }
+        agentHost.onJob = { [weak self] jobID, job in
+            self?.presenter?.job(sessionID: "acp", id: jobID, job: job)
+        }
+        agentHost.onPermission = { [weak self] question, options, reply in
+            guard let self else { return reply(nil) }
+            self.agentPermissionPrompt?.finish(nil)
+            self.agentPermissionPrompt = ChoicePrompt(
+                question: String(question.prefix(200)),
+                options: options.map { String($0.name.prefix(40)) },
+                near: nil,
+                captureVisible: environment["MACCU_CAPTURE_OVERLAY"] == "1"
+            ) { [weak self] index in
+                self?.agentPermissionPrompt = nil
+                reply(index.flatMap { options.indices.contains($0) ? options[$0].id : nil })
+            }
+        }
         presenter?.jobs.onPause = { [weak self] sessionID, paused in
             self?.sessions[sessionID]?.control.send(["type": "pause", "paused": paused])
         }
@@ -488,6 +512,9 @@ public final class ServiceHost {
         sessions.removeAll()
         voice.stopAll()
         agentCam?.hide()
+        notes.removeOverlays()
+        agentHost.stopAll()
+        agentPermissionPrompt?.finish(nil)
         presenter?.removeAll()
         for monitor in keyMonitors { NSEvent.removeMonitor(monitor) }
         keyMonitors.removeAll()
@@ -570,6 +597,27 @@ public final class ServiceHost {
         broadcast(["type": "pause", "paused": paused])
         presenter?.setPaused(paused)
         notifyChange()
+    }
+
+    // MARK: Review notes
+
+    /// Circle something on screen and leave a note for whichever agent it concerns.
+    public func leaveFeedback() { notes.leaveFeedback() }
+    public var openNoteCount: Int { notes.openCount }
+    public var resolvedNoteCount: Int { notes.store.list(NoteFilter.resolvedOnly).count }
+    public func openNotesFolder() { notes.openFolder() }
+    @discardableResult
+    public func clearResolvedNotes() -> Int { notes.clearResolved() }
+
+    /// Agents the person set up in agents.json (or found on PATH) that can
+    /// take a review over the Agent Client Protocol.
+    public var reviewAgentNames: [String] { agentHost.agentNames }
+
+    /// Sends every open, unclaimed note to the person's own agent.
+    public func sendReview(toAgent name: String) {
+        var filter = NoteFilter()
+        filter.statuses = [.open]
+        agentHost.sendReview(notes.store.list(filter), to: name)
     }
 
     // MARK: Guided tours
@@ -699,14 +747,15 @@ public final class ServiceHost {
             return
         }
         let reportedName = (hello["client_info"] as? [String: Any])?["name"] as? String
+        let workingDirectory = (hello["cwd"] as? String).map { String($0.prefix(1024)) }
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                self.admit(connection, identity: identity, reportedClientName: reportedName)
+                self.admit(connection, identity: identity, reportedClientName: reportedName, workingDirectory: workingDirectory)
             }
         }
     }
 
-    private func admit(_ connection: Int32, identity: ServiceClientIdentity, reportedClientName: String?) {
+    private func admit(_ connection: Int32, identity: ServiceClientIdentity, reportedClientName: String?, workingDirectory: String?) {
         func refuse(_ message: String) {
             writeAll(connection, encodeJSONLine(["maccu_service": 1, "accepted": false, "error": message]))
             close(connection)
@@ -775,8 +824,10 @@ public final class ServiceHost {
                 "detail": identity.detail,
                 "path": identity.path,
                 "reported_name": (reportedClientName as Any?) ?? NSNull(),
+                "cwd": (workingDirectory as Any?) ?? NSNull(),
             ] as [String: Any],
         ])
+        control.send(["type": "notes_changed", "open": notes.openCount])
         if let presenter {
             control.send(["type": "overlay_windows", "ids": presenter.windowIDs.map { Int($0) }])
         }
@@ -1053,6 +1104,15 @@ public final class ServiceHost {
             handleVisualRequest(kind, message, session: session, requestID: requestID)
             return
         }
+        if let kind = message["kind"] as? String, kind.hasPrefix("notes_") {
+            notes.handle(kind, message) { payload in
+                var response = payload
+                response["type"] = "response"
+                response["id"] = requestID
+                session.control.send(response)
+            }
+            return
+        }
         var interaction: ActiveInteraction?
         // Walkthrough waits keep the step's bubble on screen.
         if message["kind"] as? String != "wait_click", message["kind"] as? String != "wait_next",
@@ -1239,7 +1299,9 @@ public final class ServiceHost {
     }
 
     private func refreshExtraWindows() {
-        presenter?.setExtraWindows(interactions.flatMap { $0.windowIDs() } + (agentCam?.panelWindowID.map { [$0] } ?? []))
+        presenter?.setExtraWindows(
+            interactions.flatMap { $0.windowIDs() } + notes.windowIDs + (agentCam?.panelWindowID.map { [$0] } ?? [])
+        )
     }
 
     /// Whether agents may speak aloud. Turning it off silences any speech
@@ -1354,6 +1416,12 @@ public final class ServiceHost {
     /// session. Synthetic desktop Escape events are ignored.
     private func installEscapeMonitor() {
         let handler: (NSEvent) -> Void = { [weak self] event in
+            if event.keyCode == leaveFeedbackKeyCode,
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == leaveFeedbackModifiers,
+               event.cgEvent?.getIntegerValueField(.eventSourceUserData) != desktopSyntheticEventUserData {
+                MainActor.assumeIsolated { self?.leaveFeedback() }
+                return
+            }
             guard event.keyCode == 53,
                   event.cgEvent?.getIntegerValueField(.eventSourceUserData) != desktopSyntheticEventUserData else {
                 return
@@ -1372,6 +1440,10 @@ public final class ServiceHost {
     }
 
     private func escapePressed() {
+        if notes.isComposing {
+            notes.cancelComposing()
+            return
+        }
         voice.stopAll()
         if let tourPlayback {
             tourPlayback.cancel()

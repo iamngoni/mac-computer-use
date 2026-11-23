@@ -80,7 +80,13 @@ final class ManagerApplicationController: NSObject, NSApplicationDelegate {
             tours: { [weak host] in (host?.savedTours ?? []).map { (name: $0.name, title: $0.title) } },
             playTour: { [weak host] name in host?.playTour(named: name) },
             openToursFolder: { [weak host] in host?.openToursFolder() },
-            allowClient: { [weak host] key in host?.promptToAllowClient(key) }
+            allowClient: { [weak host] key in host?.promptToAllowClient(key) },
+            leaveFeedback: { [weak host] in host?.leaveFeedback() },
+            noteCounts: { [weak host] in (host?.openNoteCount ?? 0, host?.resolvedNoteCount ?? 0) },
+            openNotesFolder: { [weak host] in host?.openNotesFolder() },
+            clearResolvedNotes: { [weak host] in host?.clearResolvedNotes() },
+            reviewAgents: { [weak host] in host?.reviewAgentNames ?? [] },
+            sendReviewToAgent: { [weak host] name in host?.sendReview(toAgent: name) }
         )
         let coordinator = AutomationStatusBarCoordinator(
             cursorImage: cursor,

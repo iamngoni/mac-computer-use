@@ -204,6 +204,12 @@ public struct AutomationStatusBarActions {
     public let playTour: (String) -> Void
     public let openToursFolder: () -> Void
     public let allowClient: (String) -> Void
+    public let leaveFeedback: () -> Void
+    public let noteCounts: () -> (open: Int, resolved: Int)
+    public let openNotesFolder: () -> Void
+    public let clearResolvedNotes: () -> Void
+    public let reviewAgents: () -> [String]
+    public let sendReviewToAgent: (String) -> Void
 
     public init(
         version: String,
@@ -223,7 +229,13 @@ public struct AutomationStatusBarActions {
         tours: @escaping () -> [(name: String, title: String)] = { [] },
         playTour: @escaping (String) -> Void = { _ in },
         openToursFolder: @escaping () -> Void = {},
-        allowClient: @escaping (String) -> Void = { _ in }
+        allowClient: @escaping (String) -> Void = { _ in },
+        leaveFeedback: @escaping () -> Void = {},
+        noteCounts: @escaping () -> (open: Int, resolved: Int) = { (0, 0) },
+        openNotesFolder: @escaping () -> Void = {},
+        clearResolvedNotes: @escaping () -> Void = {},
+        reviewAgents: @escaping () -> [String] = { [] },
+        sendReviewToAgent: @escaping (String) -> Void = { _ in }
     ) {
         self.version = version
         self.setup = setup
@@ -243,6 +255,12 @@ public struct AutomationStatusBarActions {
         self.playTour = playTour
         self.openToursFolder = openToursFolder
         self.allowClient = allowClient
+        self.leaveFeedback = leaveFeedback
+        self.noteCounts = noteCounts
+        self.openNotesFolder = openNotesFolder
+        self.clearResolvedNotes = clearResolvedNotes
+        self.reviewAgents = reviewAgents
+        self.sendReviewToAgent = sendReviewToAgent
     }
 }
 
@@ -423,6 +441,41 @@ final class AutomationStatusBarController {
             }
 
             menu.addItem(.separator())
+            let feedback = NSMenuItem(title: "Leave Feedback…", action: #selector(leaveFeedback), keyEquivalent: "n")
+            feedback.keyEquivalentModifierMask = [.control, .option, .command]
+            feedback.target = self
+            menu.addItem(feedback)
+            let counts = actions.noteCounts()
+            let notesItem = NSMenuItem(
+                title: counts.open > 0 ? "Review Notes (\(counts.open) open)" : "Review Notes",
+                action: nil,
+                keyEquivalent: ""
+            )
+            let notesMenu = NSMenu(title: "Review Notes")
+            let summary = NSMenuItem(title: "\(counts.open) open · \(counts.resolved) resolved", action: nil, keyEquivalent: "")
+            summary.isEnabled = false
+            notesMenu.addItem(summary)
+            let agents = actions.reviewAgents()
+            if counts.open > 0, !agents.isEmpty {
+                notesMenu.addItem(.separator())
+                for agent in agents {
+                    let send = NSMenuItem(title: "Send Review to \(agent)", action: #selector(sendReview(_:)), keyEquivalent: "")
+                    send.target = self
+                    send.representedObject = agent
+                    notesMenu.addItem(send)
+                }
+            }
+            notesMenu.addItem(.separator())
+            let openNotes = NSMenuItem(title: "Open Notes Folder…", action: #selector(openNotesFolder), keyEquivalent: "")
+            openNotes.target = self
+            notesMenu.addItem(openNotes)
+            let clear = NSMenuItem(title: "Clear Resolved Notes", action: #selector(clearResolvedNotes), keyEquivalent: "")
+            clear.target = self
+            clear.isEnabled = counts.resolved > 0
+            notesMenu.addItem(clear)
+            notesItem.submenu = notesMenu
+            menu.addItem(notesItem)
+
             let toursItem = NSMenuItem(title: "Guided Tours", action: nil, keyEquivalent: "")
             let toursMenu = NSMenu(title: "Guided Tours")
             let tours = actions.tours()
@@ -495,6 +548,13 @@ final class AutomationStatusBarController {
         actions?.playTour(name)
     }
     @objc private func openToursFolder() { actions?.openToursFolder() }
+    @objc private func leaveFeedback() { actions?.leaveFeedback() }
+    @objc private func openNotesFolder() { actions?.openNotesFolder() }
+    @objc private func clearResolvedNotes() { actions?.clearResolvedNotes() }
+    @objc private func sendReview(_ sender: NSMenuItem) {
+        guard let agent = sender.representedObject as? String else { return }
+        actions?.sendReviewToAgent(agent)
+    }
     @objc private func allowClient(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String else { return }
         actions?.allowClient(key)
