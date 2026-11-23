@@ -339,6 +339,11 @@ final class CoreContractTests: XCTestCase {
                 "wait_for_user",
                 "guide",
                 "say",
+                "list_notes",
+                "get_note",
+                "claim_note",
+                "resolve_note",
+                "wait_for_notes",
                 "health_report",
             ]
         )

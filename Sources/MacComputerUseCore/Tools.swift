@@ -1065,6 +1065,7 @@ func toolDefinitions() -> [ToolDefinition] {
             ),
             handler: toolSay
         ),
+    ] + noteToolDefinitions() + [
         ToolDefinition(
             name: "health_report",
             description: "Report permission, process, bundle, overlay, app/window-resolution, and input-safety health as machine-readable JSON without prompting for permissions.",
@@ -1086,7 +1087,13 @@ func dispatchTool(_ name: String, _ args: [String: Any]) -> [String: Any] {
         return toolText("Unknown tool: \(name)", isError: true)
     }
     if let refusal = toolCallGate?(name) { return refusal }
-    return tool.handler(args)
+    ActivityLog.shared.record(tool: name, args: args)
+    var result = tool.handler(args)
+    if let footer = pendingNotesFooter(tool: name), var content = result["content"] as? [[String: Any]] {
+        content.append(footer)
+        result["content"] = content
+    }
+    return result
 }
 
 /// Pause between moving the pointer and delivering an application-scoped click.

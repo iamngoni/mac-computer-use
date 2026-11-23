@@ -207,6 +207,8 @@ final class MCPRelay: @unchecked Sendable {
             "version": macComputerUseVersion(),
             "pid": Int(getpid()),
             "client_info": params["clientInfo"] ?? NSNull(),
+            "ppid": Int(getppid()),
+            "cwd": FileManager.default.currentDirectoryPath,
         ]
         guard writeAll(connection, encodeJSONLine(hello)),
               let ackLine = reader.readLine(timeout: 10),
