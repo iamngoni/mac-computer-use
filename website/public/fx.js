@@ -160,4 +160,98 @@
       c.style.setProperty("--sx", `${e.clientX - r.left}px`); c.style.setProperty("--sy", `${e.clientY - r.top}px`);
     });
   });
+
+  /* ---------- Scroll progress. ---------- */
+  const bar = document.createElement("div"); bar.className = "fx-progress"; bar.setAttribute("aria-hidden", "true");
+  document.body.append(bar);
+  const prog = () => (bar.style.transform = `scaleX(${scrollY / Math.max(document.documentElement.scrollHeight - innerHeight, 1)})`);
+  addEventListener("scroll", prog, { passive: true }); prog();
+
+  /* ---------- A resident agent. When you sit still it flies in, points at
+     something worth knowing and circles it, then gets out of your way.
+     Esc pauses it, exactly like the app. ---------- */
+  const bud = document.createElement("div"); bud.className = "fx-bud"; bud.setAttribute("aria-hidden", "true");
+  bud.innerHTML = '<img src="/cursor.png" alt=""><span class="fx-say"></span>';
+  const ink = document.createElementNS("http://www.w3.org/2000/svg", "svg"); ink.setAttribute("class", "fx-ink"); ink.setAttribute("aria-hidden", "true");
+  const inkP = document.createElementNS("http://www.w3.org/2000/svg", "path"); ink.append(inkP);
+  const pill = document.createElement("div"); pill.className = "fx-pill"; pill.setAttribute("role", "status");
+  document.body.append(ink, bud, pill);
+  const bimg = bud.querySelector("img"), bsay = bud.querySelector(".fx-say");
+  bimg.style.transformOrigin = `${TIP.x * 100}% ${TIP.y * 100}%`;
+  let bpos = { x: innerWidth + 60, y: innerHeight * 0.6 }, bflight = null, busy = false, paused = false, idleAt = performance.now();
+  const visited = new Set();
+  const smooth = (t) => t * t * (3 - 2 * t);
+  const bplace = (rot = 0, s = 1) => {
+    bud.style.transform = `translate3d(${bpos.x}px, ${bpos.y}px, 0)`;
+    bimg.style.transform = `translate(${-TIP.x * SIZE}px, ${-TIP.y * SIZE}px) rotate(${rot}rad) scale(${s})`;
+  };
+  bplace();
+  const bfly = (to) => new Promise((done) => {
+    const dist = Math.hypot(to.x - bpos.x, to.y - bpos.y), lift = Math.min(dist * 0.2, 80);
+    bflight = { from: { ...bpos }, to, c: { x: (bpos.x + to.x) / 2, y: (bpos.y + to.y) / 2 - lift }, t0: performance.now(), dur: Math.min(Math.max(dist / 800, 0.6), 1.4) * 1000, done };
+  });
+  let lastNow = performance.now();
+  const btick = (now) => {
+    const f = bflight, dt = now - lastNow; lastNow = now;
+    if (f && paused) f.t0 += dt;
+    else if (f) {
+      const raw = (now - f.t0) / f.dur;
+      if (raw >= 1) { bpos = { ...f.to }; bplace(); bflight = null; f.done(); }
+      else {
+        const t = Math.max(raw, 0), e = smooth(t), u = 1 - e;
+        const x = u * u * f.from.x + 2 * u * e * f.c.x + e * e * f.to.x, y = u * u * f.from.y + 2 * u * e * f.c.y + e * e * f.to.y;
+        const tx = 2 * u * (f.c.x - f.from.x) + 2 * e * (f.to.x - f.c.x), ty = 2 * u * (f.c.y - f.from.y) + 2 * e * (f.to.y - f.c.y);
+        const w = Math.sin(Math.PI * t);
+        let turn = Math.atan2(ty, tx) - REST; turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+        bpos = { x, y }; bplace(turn * w, 1 + 0.3 * w);
+        trail.push({ x, y, t: now });
+      }
+    }
+    requestAnimationFrame(btick);
+  };
+  requestAnimationFrame(btick);
+  const wait = (ms) => new Promise((r) => {
+    let left = ms, prev = performance.now();
+    const go = () => { const n = performance.now(); if (!paused) left -= n - prev; prev = n; left <= 0 ? r() : setTimeout(go, 50); };
+    go();
+  });
+  const circle = (r, ms) => {
+    const pad = 10, cx = r.left + r.width / 2, cy = r.top + r.height / 2, rx = r.width / 2 + pad, ry = r.height / 2 + pad;
+    inkP.setAttribute("d", `M ${cx - rx} ${cy + 2} C ${cx - rx} ${cy - ry * 1.35}, ${cx + rx} ${cy - ry * 1.4}, ${cx + rx + 3} ${cy} C ${cx + rx + 6} ${cy + ry * 1.35}, ${cx - rx + 4} ${cy + ry * 1.4}, ${cx - rx - 5} ${cy - 3}`);
+    const len = inkP.getTotalLength();
+    inkP.style.transition = "none"; inkP.style.strokeDasharray = len; inkP.style.strokeDashoffset = len; inkP.getBoundingClientRect();
+    inkP.style.transition = `stroke-dashoffset ${ms}ms cubic-bezier(.22,1,.36,1), opacity .4s`;
+    inkP.style.opacity = 1; inkP.style.strokeDashoffset = 0;
+  };
+  const visit = async () => {
+    const tips = $$("[data-tip]").filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.top > 80 && r.bottom < innerHeight - 90; });
+    const el = tips.find((t) => !visited.has(t));
+    if (!el) return;
+    busy = true; visited.add(el);
+    const r = el.getBoundingClientRect();
+    bud.classList.add("on");
+    await bfly({ x: Math.min(r.right + 6, innerWidth - 220), y: r.bottom + 4 });
+    circle(el.getBoundingClientRect(), 800);
+    bsay.textContent = el.dataset.tip; bud.classList.add("talk");
+    await wait(3200);
+    bud.classList.toggle("talk", false); inkP.style.opacity = 0;
+    await wait(250);
+    await bfly({ x: innerWidth + 60, y: bpos.y + 40 });
+    bud.classList.toggle("on", false); busy = false; idleAt = performance.now();
+  };
+  addEventListener("pointermove", () => (idleAt = performance.now()), { passive: true });
+  addEventListener("scroll", () => { idleAt = performance.now(); if (busy) inkP.style.opacity = 0; }, { passive: true });
+  setInterval(() => {
+    if (!busy && !paused && seen && document.visibilityState === "visible" && performance.now() - idleAt > 4500) visit();
+  }, 500);
+
+  let pillTimer;
+  addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.target.closest("input, textarea")) return;
+    paused = !paused;
+    root.classList.toggle("fx-paused", paused);
+    pill.innerHTML = paused ? "<b>⏸</b> All agents paused · press <kbd>esc</kbd> to resume" : "<b>▶</b> Agents resumed";
+    pill.classList.add("on"); clearTimeout(pillTimer);
+    if (!paused) { idleAt = performance.now(); pillTimer = setTimeout(() => pill.classList.toggle("on", false), 1600); }
+  });
 })();
