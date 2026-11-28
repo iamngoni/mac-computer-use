@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Mac Computer Use — let AI agents use your Mac, safely</title>
-<meta name="description" content="Mac Computer Use is a free, open-source macOS app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use Mac apps in the background, without moving your pointer. Esc stops everything.">
+<title>Mac Computer Use — work alongside AI agents on your Mac</title>
+<meta name="description" content="Mac Computer Use is a free, open-source macOS app that connects Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients to your apps. Agents can work in the background, ask you to step in, and pause when you take over.">
 <link rel="canonical" href="https://mcu.iamngoni.dev/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="author" content="Ngonidzashe Mangudya">
@@ -16,14 +16,14 @@
 <meta property="og:site_name" content="Mac Computer Use">
 <meta property="og:url" content="https://mcu.iamngoni.dev/">
 <meta property="og:title" content="Mac Computer Use">
-<meta property="og:description" content="Let AI agents use your Mac without taking it from you. Free and open source.">
+<meta property="og:description" content="Work alongside AI agents on your Mac. Free and open source. Agents work in the background, ask when they need you, and pause when you take over.">
 <meta property="og:image" content="https://mcu.iamngoni.dev/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Mac Computer Use: the agent cursor working in a Mac window">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Mac Computer Use">
-<meta name="twitter:description" content="Let AI agents use your Mac without taking it from you.">
+<meta name="twitter:description" content="Work alongside AI agents on your Mac. Free and open source. Agents work in the background, ask when they need you, and pause when you take over.">
 <meta name="twitter:image" content="https://mcu.iamngoni.dev/og.png">
 
 <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
@@ -76,25 +76,26 @@
     <a href="#how">How it works</a>
     <a href="#tools">Tools</a>
     <a href="#faq">FAQ</a>
-    <a href="https://github.com/iamngoni/mac-computer-use" rel="noopener">GitHub</a>
+    <a href="https://github.com/iamngoni/mac-computer-use" rel="noopener" data-cur="Read the source">GitHub</a>
     <a href="/download" class="nav-dl">Download</a>
   </nav>
 </header>
 
 <main id="main">
   <section class="hero page">
+    <div class="hero-bg" aria-hidden="true"><i></i><i></i><i></i></div>
     <div class="hero-text">
-      <h1>Let your agent use your Mac, without taking it from&nbsp;you.</h1>
-      <p class="lede">Mac Computer Use is a small Mac app that lets Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients see and use your apps. It works in the background, leaves your pointer alone, and stops the moment you press <kbd>esc</kbd>.</p>
+      <h1>Work alongside AI agents on your Mac.</h1>
+      <p class="lede">Mac Computer Use connects Claude Code, Codex, OpenCode, Cursor, Gemini CLI and other MCP clients to your apps. Your agent can work in the background, ask you to step in, and pause when you take over. Press <kbd>esc</kbd> to pause every agent.</p>
       <div class="dl">
-        <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
+        <a class="btn" href="/download" data-cur="Grab it — it's free">Download for macOS <span aria-hidden="true">↓</span></a>
         <p class="dl-meta"><span data-version>Latest version</span> · Apple silicon and Intel · macOS 14 or later<span data-size></span> · <a class="ink" href="/download/zip">ZIP</a></p>
       </div>
     </div>
     <p class="aside">Below is a sketch of an agent at work, drawn in your browser with the app's own cursor. Your pointer is yours the whole time.</p>
   </section>
 
-  <section class="page" aria-label="Demo">
+  <section class="page sketch-wrap" aria-label="Demo">
     <figure class="sketch" id="sketch">
       <div class="desk" id="desk">
         <div class="win notes" id="notes">
@@ -139,7 +140,7 @@
         <ol id="log"></ol>
       </div>
     </figure>
-    <figcaption class="cap"><span>A sketch of what an agent does with Mac Computer Use. Your own pointer, top right, never moves.</span><button type="button" class="replay" id="replay">Replay</button></figcaption>
+    <figcaption class="cap"><span>A sketch of what an agent does with Mac Computer Use. Your own pointer, top right, never moves.</span><button type="button" class="replay" id="replay" data-cur="Run it again">Replay</button></figcaption>
   </section>
 
   <section class="page statement">
@@ -298,7 +299,7 @@
     <h2>Hand your agent the Mac.</h2>
     <p>It's free, works offline, and updates itself.</p>
     <div class="dl">
-      <a class="btn" href="/download">Download for macOS <span aria-hidden="true">↓</span></a>
+      <a class="btn" href="/download" data-cur="Grab it — it's free">Download for macOS <span aria-hidden="true">↓</span></a>
       <p class="dl-meta"><span data-version>Latest version</span> · <a class="ink" data-notes href="https://github.com/iamngoni/mac-computer-use/releases">Release notes</a></p>
     </div>
   </section>
@@ -310,5 +311,6 @@
 </footer>
 
 <script src="/app.js" defer></script>
+<script src="/fx.js" defer></script>
 </body>
 </html>

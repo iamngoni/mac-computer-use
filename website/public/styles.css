@@ -239,3 +239,109 @@ details p { color: var(--fg-2); margin-top: .5rem; font-size: 1rem; max-width: 4
 .agents button:focus-visible { outline: 2px solid #3daaff; outline-offset: 2px; }
 .pane-note { margin-top: .8rem; font-size: .875rem; color: var(--fg-2); }
 .pane-note code { font-size: .8rem; }
+
+/* ===================== fx: the spectacular layer ===================== */
+
+/* Hero atmosphere: a drifting aurora, a dot grid, and a light that follows you. */
+.hero { position: relative; isolation: isolate; }
+.hero-bg { position: absolute; inset: -6rem -50vw -10rem; z-index: -1; pointer-events: none; overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 55%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent); }
+.hero-bg::before { content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(color-mix(in srgb, var(--fg) 16%, transparent) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(60rem 30rem at 50% 30%, #000, transparent 70%); -webkit-mask-image: radial-gradient(60rem 30rem at 50% 30%, #000, transparent 70%); }
+.hero-bg i { position: absolute; border-radius: 50%; filter: blur(70px); opacity: .55; mix-blend-mode: var(--blend, multiply); animation: drift 22s var(--ease) infinite alternate; }
+.hero-bg i:nth-child(1) { width: 42rem; height: 26rem; left: 38%; top: -8rem; background: #3daaff; opacity: .28; }
+.hero-bg i:nth-child(2) { width: 30rem; height: 22rem; left: 62%; top: 6rem; background: #8b7bff; opacity: .2; animation-duration: 28s; animation-delay: -6s; }
+.hero-bg i:nth-child(3) { width: 26rem; height: 18rem; left: 20%; top: 10rem; background: #35d0c0; opacity: .14; animation-duration: 34s; animation-delay: -12s; }
+@keyframes drift { 0% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-6rem, 3rem) scale(1.15); } 100% { transform: translate(4rem, -2rem) scale(.95); } }
+@media (prefers-color-scheme: dark) { .hero-bg { --blend: screen; } .hero-bg i:nth-child(1) { opacity: .22; } }
+.fx .hero-bg::after { content: ""; position: absolute; inset: 0;
+  background: radial-gradient(28rem 28rem at var(--mx, -50rem) calc(var(--my, -50rem) + 6rem), color-mix(in srgb, var(--accent) 16%, transparent), transparent 65%); }
+
+h1 { background: linear-gradient(100deg, var(--fg) 0%, var(--fg) 40%, var(--accent-ink) 50%, var(--fg) 60%, var(--fg) 100%);
+  background-size: 250% 100%; background-position: 100% 0; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: sheen 6s var(--ease) 1s infinite; }
+@keyframes sheen { 0%, 60% { background-position: 100% 0; } 100% { background-position: 0% 0; } }
+.hero-text > * { animation: rise .9s var(--ease) both; }
+.hero-text > :nth-child(2) { animation-delay: .1s; } .hero-text > :nth-child(3) { animation-delay: .2s; }
+@keyframes rise { from { opacity: 0; transform: translateY(18px); filter: blur(6px); } }
+
+/* Buttons: a sheen that follows the pointer, and a glow. */
+.btn { position: relative; overflow: hidden; isolation: isolate; transition: transform .2s var(--ease), translate .35s var(--ease), box-shadow .3s var(--ease);
+  box-shadow: 0 1px 0 rgb(255 255 255 / .15) inset, 0 8px 24px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
+.btn::before { content: ""; position: absolute; inset: 0; z-index: -1; opacity: 0; transition: opacity .3s;
+  background: radial-gradient(9rem 9rem at var(--bx, 50%) var(--by, 50%), color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%); }
+.btn:hover { opacity: 1; box-shadow: 0 1px 0 rgb(255 255 255 / .15) inset, 0 14px 36px -10px color-mix(in srgb, var(--accent) 90%, transparent); }
+.btn:hover::before { opacity: 1; }
+.btn span { transition: transform .3s var(--ease); } .btn:hover span { transform: translateY(2px); }
+.nav-dl { transition: translate .35s var(--ease); }
+
+/* Sticky glass header. */
+.top { position: sticky; top: 0; z-index: 20; max-width: none; padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100vw - 76rem) / 2 + clamp(1rem, 4vw, 3rem)));
+  background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: saturate(1.6) blur(14px); -webkit-backdrop-filter: saturate(1.6) blur(14px);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+
+/* Sketch: tilts back in space and settles flat as you scroll to it, with a lit edge. */
+.sketch-wrap { perspective: 1600px; }
+.sketch { transform: rotateX(var(--tilt, 0deg)) scale(var(--sk, 1)); transform-origin: 50% 0; transition: transform .12s linear;
+  box-shadow: var(--shadow), 0 40px 120px -40px color-mix(in srgb, var(--accent) 45%, transparent); position: relative; }
+.sketch::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; padding: 1px;
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 60%, transparent), transparent 35%, transparent 65%, color-mix(in srgb, #8b7bff 45%, transparent));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+
+/* Statement: words light up as you read down the page. */
+.statement p.lit, .statement p.lit b { color: var(--fg-3); }
+.statement .w { transition: color .5s var(--ease), text-shadow .5s var(--ease); }
+.statement .w.on { color: var(--fg); }
+.statement b .w.on { color: var(--accent-ink); }
+
+/* Cards with a spotlight border that tracks the pointer. */
+.points article { padding: 1.5rem 1.6rem; border-radius: 14px; background: color-mix(in srgb, var(--panel) 70%, transparent); border: 1px solid var(--line); }
+.spot { position: relative; isolation: isolate; }
+.fx .spot::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; padding: 1px; opacity: 0; transition: opacity .3s;
+  background: radial-gradient(16rem 16rem at var(--sx) var(--sy), var(--accent), transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+.fx .spot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1; opacity: 0; transition: opacity .3s;
+  background: radial-gradient(20rem 20rem at var(--sx) var(--sy), color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%); }
+.fx .spot:hover::before, .fx .spot:hover::after { opacity: 1; }
+.tool-cols dl, .steps li { border-radius: 12px; padding: .8rem; margin: -.8rem; }
+.faq details { border-radius: 0; }
+.tool-cols code { transition: color .2s, border-color .2s, box-shadow .2s; }
+.tool-cols code:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.n { transition: background .3s, color .3s, border-color .3s; }
+.steps li:hover .n { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Ending: the cursor floats, and a glow rises behind the call to action. */
+.end { position: relative; isolation: isolate; text-align: center; display: flex; flex-direction: column; align-items: center; }
+.end::before { content: ""; position: absolute; left: 50%; top: 55%; width: min(60rem, 120vw); height: 26rem; translate: -50% -50%; z-index: -1; border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 22%, transparent), transparent); filter: blur(10px); }
+.end > img { width: 44px; height: 44px; animation: hover 4s ease-in-out infinite; filter: drop-shadow(0 8px 16px color-mix(in srgb, var(--accent) 60%, transparent)); }
+@keyframes hover { 50% { transform: translate(6px, -10px) rotate(-8deg); } }
+.end .dl { justify-content: center; flex-direction: column; }
+
+/* ---------- The visitor's agent cursor ---------- */
+.fx.fx-on, .fx.fx-on * { cursor: none !important; }
+.fx-trail { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 9998; }
+.fx-cur, .fx-halo { position: fixed; left: 0; top: 0; pointer-events: none; z-index: 9999; opacity: 0; transition: opacity .25s; will-change: transform; }
+.fx-on .fx-cur, .fx-on .fx-halo { opacity: 1; }
+.fx-cur img { position: absolute; left: 0; top: 0; width: 26px; height: 26px; max-width: none; filter: drop-shadow(0 2px 3px rgb(0 0 0 / .3)) drop-shadow(0 0 8px rgb(61 170 255 / .35)); transition: opacity .15s; }
+.fx-halo { z-index: 9997; width: 0; height: 0; }
+.fx-halo::before { content: ""; position: absolute; width: 38px; height: 38px; left: -19px; top: -19px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 70%, transparent); opacity: 0; transform: scale(.4); transition: opacity .25s var(--ease), transform .35s var(--ease); }
+[data-cmode="link"] .fx-halo::before { opacity: 1; transform: scale(1); }
+.fx-cur.down img { scale: .82; }
+.fx-beam { position: absolute; left: -1px; top: -11px; width: 2px; height: 22px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); opacity: 0; transition: opacity .15s; animation: blink 1.1s steps(2) infinite; }
+.fx-cur[data-mode="text"] img { opacity: 0; }
+.fx-cur[data-mode="text"] .fx-beam { opacity: 1; }
+@keyframes blink { 50% { opacity: .35; } }
+.fx-tag { position: absolute; left: 22px; top: 22px; white-space: nowrap; font: 600 11px/1 var(--ui); letter-spacing: .01em; color: #fff; background: var(--accent);
+  padding: .45em .7em; border-radius: 999px 999px 999px 4px; box-shadow: 0 6px 16px -4px rgb(61 170 255 / .6); opacity: 0; transform: translateY(4px) scale(.9); transform-origin: 0 0;
+  transition: opacity .2s var(--ease), transform .25s var(--ease); }
+.fx-cur.tagged .fx-tag { opacity: 1; transform: none; }
+.fx-ring { position: fixed; z-index: 9997; width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; border: 2px solid var(--accent); pointer-events: none; animation: ring .55s var(--ease) forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  h1 { animation: none; background: none; color: var(--fg); }
+  .hero-bg i, .end > img { animation: none; }
+}
