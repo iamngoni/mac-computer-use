@@ -254,4 +254,104 @@
     pill.classList.add("on"); clearTimeout(pillTimer);
     if (!paused) { idleAt = performance.now(); pillTimer = setTimeout(() => pill.classList.toggle("on", false), 1600); }
   });
+
+  /* ---------- Drag on empty space to draw, the way annotate does. ---------- */
+  const pad = document.createElementNS("http://www.w3.org/2000/svg", "svg"); pad.setAttribute("class", "fx-pad"); pad.setAttribute("aria-hidden", "true");
+  document.body.append(pad);
+  const blank = (t) => !t.closest("p, h1, h2, h3, a, button, code, pre, kbd, dt, dd, summary, label, img, .desk, .log, [role=tab], .fx-pal");
+  let stroke = null, pts = [];
+  addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0 || !blank(e.target)) return;
+    e.preventDefault();
+    stroke = document.createElementNS("http://www.w3.org/2000/svg", "path"); pad.append(stroke);
+    pts = [[e.clientX, e.clientY]];
+  });
+  addEventListener("pointermove", (e) => {
+    if (!stroke) return;
+    pts.push([e.clientX, e.clientY]);
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) { const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2; d += ` Q ${pts[i][0]} ${pts[i][1]} ${mx} ${my}`; }
+    stroke.setAttribute("d", d);
+  }, { passive: true });
+  addEventListener("pointerup", () => {
+    if (!stroke) return;
+    const s = stroke; stroke = null;
+    setTimeout(() => s.classList.add("gone"), 1400);
+    s.addEventListener("transitionend", () => s.parentNode && s.parentNode.removeChild(s));
+  });
+  addEventListener("scroll", () => $$("path", pad).forEach((p) => p.classList.add("gone")), { passive: true });
+
+  /* ---------- Tool chips copy their name, and the cursor says so. ---------- */
+  $$(".tool-cols code").forEach((c) => {
+    c.dataset.cur = "Copy name";
+    c.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(c.textContent); } catch {}
+      tag.textContent = `Copied ${c.textContent}`; cur.classList.add("tagged", "ok");
+      setTimeout(() => { cur.classList.toggle("ok", false); tag.textContent = "Copy name"; }, 1200);
+    });
+  });
+  // Links/buttons pick up data-cur labels; code chips need it too.
+  document.addEventListener("pointerover", (e) => {
+    const c = e.target.closest(".tool-cols code");
+    if (c) { cur.dataset.mode = "link"; root.dataset.cmode = "link"; if (!cur.classList.contains("ok")) tag.textContent = c.dataset.cur; cur.classList.add("tagged"); }
+  });
+
+  /* ---------- ⌘K: a palette that sends the agent anywhere on the page. ---------- */
+  const items = [
+    ["Watch the demo", "#sketch"], ["How it works", "#how"], ["Set up", ".setup"], ["All 37 tools", "#tools"], ["Questions", "#faq"], ["Download", ".end"],
+    ...$$(".tool-cols code").map((c) => [c.textContent, c, "tool"]),
+    ...$$(".agents [role=tab]").map((b) => [`Connect ${b.textContent}`, b, "setup"]),
+  ];
+  const pal = document.createElement("div"); pal.className = "fx-pal"; pal.hidden = true;
+  pal.innerHTML = '<div class="fx-pal-box" role="dialog" aria-label="Jump to"><input type="text" placeholder="Send the agent to…" aria-label="Search the page" autocomplete="off" spellcheck="false"><ul role="listbox"></ul><p class="fx-pal-foot"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> go · <kbd>esc</kbd> close</p></div>';
+  document.body.append(pal);
+  const q = pal.querySelector("input"), ul = pal.querySelector("ul");
+  let sel = 0, shown = [];
+  const render = () => {
+    const v = q.value.trim().toLowerCase();
+    shown = items.filter(([n]) => !v || n.toLowerCase().includes(v)).slice(0, 8);
+    sel = Math.min(sel, Math.max(shown.length - 1, 0));
+    ul.innerHTML = shown.map(([n, , k], i) => `<li role="option" aria-selected="${i === sel}" data-i="${i}"><span>${n.replace(/</g, "&lt;")}</span>${k ? `<em>${k}</em>` : ""}</li>`).join("") || '<li class="none">Nothing here. Try “click”.</li>';
+  };
+  const open = () => { pal.hidden = false; q.value = ""; sel = 0; render(); requestAnimationFrame(() => { pal.classList.add("on"); q.focus(); }); };
+  const close = () => { pal.classList.toggle("on", false); setTimeout(() => (pal.hidden = true), 200); };
+  const go = async (i) => {
+    const it = shown[i]; if (!it) return;
+    close();
+    const el = typeof it[1] === "string" ? document.querySelector(it[1]) : it[1];
+    if (it[2] === "setup") el.click();
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    await new Promise((r) => setTimeout(r, 650));
+    const r = el.getBoundingClientRect();
+    busy = true; bud.classList.add("on");
+    await bfly({ x: Math.min(r.left + Math.min(r.width, 200) / 2, innerWidth - 220), y: Math.min(r.top + Math.min(r.height, 60) / 2, innerHeight - 60) });
+    if (it[2] === "tool") { circle(el.getBoundingClientRect(), 600); bsay.textContent = el.parentNode.textContent.replace(/\s+/g, " ").trim().slice(0, 70); bud.classList.add("talk"); await wait(2600); bud.classList.toggle("talk", false); inkP.style.opacity = 0; }
+    else await wait(900);
+    await bfly({ x: innerWidth + 60, y: bpos.y + 40 });
+    bud.classList.toggle("on", false); busy = false; idleAt = performance.now();
+  };
+  q.addEventListener("input", () => { sel = 0; render(); });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % Math.max(shown.length, 1); render(); }
+    else if (e.key === "Enter") { e.preventDefault(); go(sel); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+  });
+  ul.addEventListener("pointermove", (e) => { const li = e.target.closest("[data-i]"); if (li && +li.dataset.i !== sel) { sel = +li.dataset.i; render(); } });
+  ul.addEventListener("click", (e) => { const li = e.target.closest("[data-i]"); if (li) go(+li.dataset.i); });
+  pal.addEventListener("pointerdown", (e) => { if (e.target === pal) close(); });
+  addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); pal.hidden ? open() : close(); }
+    else if (e.key === "/" && pal.hidden && !e.target.closest("input, textarea")) { e.preventDefault(); open(); }
+  }, true);
+
+  /* ---------- A one-time hint. ---------- */
+  let hinted = false;
+  try { hinted = localStorage.getItem("mcu-hint") === "1"; } catch {}
+  if (!hinted) {
+    const h = document.createElement("div"); h.className = "fx-hint";
+    h.innerHTML = "<kbd>⌘K</kbd> send the agent anywhere · drag on empty space to draw · <kbd>esc</kbd> pauses it";
+    document.body.append(h);
+    setTimeout(() => h.classList.add("on"), 2500);
+    setTimeout(() => { h.classList.toggle("on", false); try { localStorage.setItem("mcu-hint", "1"); } catch {} }, 11000);
+  }
 })();
